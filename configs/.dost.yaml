@@ -1,0 +1,22 @@
+app:
+  name: "dost"
+  version: "1.0.0"
+  port: 8080
+  debug: false
+logger:
+  level: "info"
+  format: "json"
+#Add The model informations here
+ai:
+  API_KEY: "API_KEY"
+  ORGANIZATION: "google"
+  MODEL: "gemini-2.0-flash"
+ROOT:
+  API_KEY: "API_KEY"
+  ORGANIZATION: "google"
+  MODEL: "gemini-2.5-flash"
+
+assistant:
+  API_KEY: "API_KEY"
+  ORGANIZATION: "deepseek"
+  MODEL: "deepseek-chat"
