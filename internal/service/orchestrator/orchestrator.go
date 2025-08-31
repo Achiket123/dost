@@ -158,12 +158,16 @@ func ProcessUserQuery(query string) map[string]any {
 
 	requiredAgentType := determineAgentTypeFromQuery(query)
 
-	if !isAgentTypeRegistered(requiredAgentType) {
-		registerResult := RegisterAgentsEnhanced(map[string]any{
-			"agent_names": []any{requiredAgentType},
-		})
-		if registerResult["error"] != nil {
-			return registerResult
+	agentNamesToRegister := []any{string(repository.AgentPlanner), string(repository.AgentCoder)}
+
+	for _, agentName := range agentNamesToRegister {
+		if !isAgentTypeRegistered(agentName.(string)) {
+			registerResult := RegisterAgentsEnhanced(map[string]any{
+				"agent_names": []any{agentName},
+			})
+			if registerResult["error"] != nil {
+				return registerResult
+			}
 		}
 	}
 
@@ -175,25 +179,212 @@ func ProcessUserQuery(query string) map[string]any {
 		"context":     globalContext,
 	}
 
-	if requiredAgentType == string(repository.AgentCoder) {
-		return routeToAgent(string(repository.AgentCoder), task)
-	} else if requiredAgentType == string(repository.AgentPlanner) {
-		subdivisionResult := SubdivideTask(map[string]any{
-			"task":         task,
-			"max_subtasks": 5,
-		})
+	executionID := fmt.Sprintf("exec_%d", time.Now().UnixNano())
 
-		if subdivisionResult["error"] != nil {
-			return routeToAgent(string(repository.AgentPlanner), task)
-		}
-
-		return ExecuteTaskWithSubdivision(map[string]any{
-			"task":               subdivisionResult["original_task"],
-			"subdivision_result": subdivisionResult,
-		})
+	execution := &TaskExecution{
+		ID:             executionID,
+		Status:         "initiated",
+		SubTasks:       []SubTask{},
+		Results:        make([]map[string]any, 0),
+		StartTime:      time.Now(),
+		Progress:       0.0,
+		TotalTasks:     0,
+		CompletedTasks: 0,
+		FailedTasks:    0,
+		PendingTasks:   1,
+		Errors:         make([]string, 0),
 	}
 
-	return routeToAgent(string(repository.AgentPlanner), task)
+	mutex.Lock()
+	taskExecutions[executionID] = execution
+	mutex.Unlock()
+
+	go monitorAndExecuteTasks(executionID, task, requiredAgentType)
+
+	return map[string]any{
+		"status":       "task_initiated",
+		"message":      "Task initiated and running in the background.",
+		"execution_id": executionID,
+	}
+}
+
+func monitorAndExecuteTasks(executionID string, initialTask map[string]any, requiredAgentType string) {
+	mutex.RLock()
+	execution := taskExecutions[executionID]
+	mutex.RUnlock()
+
+	// Handle simple, non-task queries directly without involving a planner
+	if requiredAgentType == "general_responder" {
+		result := map[string]any{
+			"status": "completed",
+			"output": "DOST is ready to assist!",
+		}
+		updateExecutionState(execution, result, "simple_completion")
+		return
+	}
+
+	// Step 1: Subdivide the task
+	subdivisionResult := SubdivideTask(map[string]any{"task": initialTask, "max_subtasks": 5})
+
+	if subdivisionResult["error"] != nil {
+		updateExecutionState(execution, subdivisionResult, "subdivision_failed")
+		return
+	}
+
+	subTasks, ok := subdivisionResult["sub_tasks"].([]SubTask)
+	if !ok {
+		updateExecutionState(execution, map[string]any{"error": "invalid subtasks format"}, "subdivision_failed")
+		return
+	}
+
+	mutex.Lock()
+	execution.SubTasks = subTasks
+	execution.TotalTasks = len(subTasks)
+	execution.PendingTasks = len(subTasks)
+	execution.Status = "in_progress"
+	mutex.Unlock()
+	saveOrchestratorContext()
+
+	// Step 2: Execute tasks in a loop until all are completed
+	for execution.CompletedTasks+execution.FailedTasks < execution.TotalTasks {
+		var wg sync.WaitGroup
+		tasksToExecute := make(chan SubTask, len(subTasks))
+		resultsChan := make(chan map[string]any, len(subTasks))
+
+		mutex.RLock()
+		for _, subTask := range subTasks {
+			if subTask.Status == "pending" {
+				// Check dependencies
+				dependenciesMet := true
+				for _, depID := range subTask.Dependencies {
+					depCompleted := false
+					for _, completedTask := range execution.SubTasks {
+						if completedTask.ID == depID && completedTask.Status == "completed" {
+							depCompleted = true
+							break
+						}
+					}
+					if !depCompleted {
+						dependenciesMet = false
+						break
+					}
+				}
+
+				if dependenciesMet {
+					tasksToExecute <- subTask
+				}
+			}
+		}
+		mutex.RUnlock()
+		close(tasksToExecute)
+
+		if len(tasksToExecute) == 0 && execution.PendingTasks > 0 {
+			// All pending tasks are blocked, handle this as a potential deadlock or wait state
+			fmt.Printf("Orchestrator is blocked, waiting for tasks to complete...\n")
+			time.Sleep(5 * time.Second)
+			continue // Continue the outer loop to re-check status
+		}
+
+		// Launch worker goroutines
+		numWorkers := min(len(tasksToExecute), 5) // Limit concurrency
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for task := range tasksToExecute {
+					taskResult := executeTask(task)
+					resultsChan <- taskResult
+				}
+			}()
+		}
+
+		go func() {
+			wg.Wait()
+			close(resultsChan)
+		}()
+
+		// Process results as they come in
+		for result := range resultsChan {
+			processTaskResult(execution, result)
+		}
+		saveOrchestratorContext()
+	}
+
+	finalStatus := "completed"
+	if execution.FailedTasks > 0 {
+		finalStatus = "partial_success"
+	}
+
+	finalResult := map[string]any{
+		"status":       finalStatus,
+		"execution_id": execution.ID,
+		"results":      execution.Results,
+		"errors":       execution.Errors,
+	}
+	updateExecutionState(execution, finalResult, "final_completion")
+
+}
+
+func executeTask(subTask SubTask) map[string]any {
+	fmt.Printf("Executing subtask: %s (Agent: %s)\n", subTask.Description, subTask.AgentType)
+	result := routeToAgent(subTask.AgentType, map[string]any{
+		"id":          subTask.ID,
+		"description": subTask.Description,
+		"type":        subTask.Type,
+		"context":     subTask.Context,
+	})
+	return result
+}
+
+func processTaskResult(execution *TaskExecution, result map[string]any) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	taskID := getStringFromMap(result, "task_id", "")
+	var failedSubTask SubTask
+	found := false
+	for i, subTask := range execution.SubTasks {
+		if subTask.ID == taskID {
+			execution.SubTasks[i].Status = "completed"
+			failedSubTask = subTask
+			found = true
+			break
+		}
+	}
+
+	execution.Results = append(execution.Results, result)
+	if result["error"] != nil {
+		execution.FailedTasks++
+		execution.Errors = append(execution.Errors, fmt.Sprintf("Task %s failed: %v", taskID, result["error"]))
+		// Self-correction: Send the error to the planner for a new plan
+		if found {
+			replanTask := map[string]any{
+				"description": fmt.Sprintf("Subtask '%s' failed with error: %v. Please create a new plan to fix it.", failedSubTask.Description, result["error"]),
+				"type":        "re_plan",
+			}
+			go monitorAndExecuteTasks(execution.ID, replanTask, "planner")
+		}
+	} else {
+		execution.CompletedTasks++
+	}
+	execution.Progress = float64(execution.CompletedTasks) / float64(execution.TotalTasks)
+	execution.PendingTasks = execution.TotalTasks - execution.CompletedTasks - execution.FailedTasks
+}
+
+func updateExecutionState(execution *TaskExecution, result map[string]any, reason string) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	endTime := time.Now()
+	execution.EndTime = &endTime
+	execution.Status = getStringFromMap(result, "status", "failed")
+
+	if result["error"] != nil {
+		execution.Errors = append(execution.Errors, getStringFromMap(result, "error", "unknown error"))
+	}
+
+	createContextSnapshot(reason)
+	saveOrchestratorContext()
 }
 
 func GetEnhancedOrchestratorCapabilitiesMap() map[string]repository.Function {
@@ -681,41 +872,19 @@ func SubdivideTask(data map[string]any) map[string]any {
 	taskType := getStringFromMap(task, "type", "general")
 
 	subTasks := make([]SubTask, 0)
-	words := strings.Fields(strings.ToLower(description))
-	stepIndicators := []string{"and", "then", "also", "additionally", "furthermore", "after", "before", "first", "second", "next"}
-	codeIndicators := []string{"code", "implement", "develop", "build", "create", "function", "class", "module"}
-	planIndicators := []string{"plan", "design", "analyze", "strategy", "approach", "organize", "structure"}
-	hasMultipleSteps := false
-	hasCodeWork := false
-	hasPlanningWork := false
+	lowerDescription := strings.ToLower(description)
 
-	for _, word := range words {
-		for _, indicator := range stepIndicators {
-			if strings.Contains(word, indicator) {
-				hasMultipleSteps = true
-				break
-			}
-		}
-		for _, indicator := range codeIndicators {
-			if strings.Contains(word, indicator) {
-				hasCodeWork = true
-				break
-			}
-		}
-		for _, indicator := range planIndicators {
-			if strings.Contains(word, indicator) {
-				hasPlanningWork = true
-				break
-			}
-		}
-	}
+	hasAppOrGame := strings.Contains(lowerDescription, "make") && (strings.Contains(lowerDescription, "app") || strings.Contains(lowerDescription, "game") || strings.Contains(lowerDescription, "cli tool"))
+	hasCodeKeywords := strings.Contains(lowerDescription, "code") || strings.Contains(lowerDescription, "implement") || strings.Contains(lowerDescription, "script") || strings.Contains(lowerDescription, "program") || strings.Contains(lowerDescription, "python") || strings.Contains(lowerDescription, "go") || strings.Contains(lowerDescription, "javascript") || strings.Contains(lowerDescription, "bash")
 
 	taskID := getStringFromMap(task, "id", fmt.Sprintf("task_%d", time.Now().UnixNano()))
 
-	if hasPlanningWork {
+	if hasAppOrGame || hasCodeKeywords {
+		// Step 1: Planning and Decomposition (for the planner agent)
+		planSubtaskID := fmt.Sprintf("%s_plan", taskID)
 		subTasks = append(subTasks, SubTask{
-			ID:           fmt.Sprintf("%s_plan", taskID),
-			Description:  fmt.Sprintf("Plan and analyze: %s", description),
+			ID:           planSubtaskID,
+			Description:  fmt.Sprintf("Plan and design the implementation for: %s", description),
 			Type:         "planning",
 			AgentType:    string(repository.AgentPlanner),
 			Priority:     1,
@@ -723,61 +892,31 @@ func SubdivideTask(data map[string]any) map[string]any {
 			Context:      copyMap(task),
 			Status:       "pending",
 		})
-	}
 
-	if hasCodeWork {
-		dependencies := []string{}
-		if hasPlanningWork {
-			dependencies = append(dependencies, fmt.Sprintf("%s_plan", taskID))
-		}
-
+		// Step 2: Code Implementation (for the coder agent), dependent on the planning step
+		codeSubtaskID := fmt.Sprintf("%s_code", taskID)
 		subTasks = append(subTasks, SubTask{
-			ID:           fmt.Sprintf("%s_code", taskID),
-			Description:  fmt.Sprintf("Implement code for: %s", description),
+			ID:           codeSubtaskID,
+			Description:  fmt.Sprintf("Write and implement the code based on the plan for: %s", description),
 			Type:         "coding",
 			AgentType:    string(repository.AgentCoder),
 			Priority:     2,
-			Dependencies: dependencies,
+			Dependencies: []string{planSubtaskID},
 			Context:      copyMap(task),
 			Status:       "pending",
 		})
-	}
-
-	if len(subTasks) == 0 {
-		if len(description) > 100 || hasMultipleSteps {
-			subTasks = append(subTasks, SubTask{
-				ID:           fmt.Sprintf("%s_analyze", taskID),
-				Description:  fmt.Sprintf("Analyze and break down: %s", description),
-				Type:         "analysis",
-				AgentType:    string(repository.AgentPlanner),
-				Priority:     1,
-				Dependencies: []string{},
-				Context:      copyMap(task),
-				Status:       "pending",
-			})
-
-			subTasks = append(subTasks, SubTask{
-				ID:           fmt.Sprintf("%s_execute", taskID),
-				Description:  fmt.Sprintf("Execute plan for: %s", description),
-				Type:         "execution",
-				AgentType:    string(repository.AgentCoder),
-				Priority:     2,
-				Dependencies: []string{fmt.Sprintf("%s_analyze", taskID)},
-				Context:      copyMap(task),
-				Status:       "pending",
-			})
-		} else {
-			subTasks = append(subTasks, SubTask{
-				ID:           fmt.Sprintf("%s_single", taskID),
-				Description:  description,
-				Type:         taskType,
-				AgentType:    string(repository.AgentPlanner),
-				Priority:     1,
-				Dependencies: []string{},
-				Context:      copyMap(task),
-				Status:       "pending",
-			})
-		}
+	} else {
+		// Fallback to a single planner task for simple queries
+		subTasks = append(subTasks, SubTask{
+			ID:           fmt.Sprintf("%s_single", taskID),
+			Description:  description,
+			Type:         taskType,
+			AgentType:    string(repository.AgentPlanner),
+			Priority:     1,
+			Dependencies: []string{},
+			Context:      copyMap(task),
+			Status:       "pending",
+		})
 	}
 
 	if len(subTasks) > maxSubtasks {
@@ -788,7 +927,7 @@ func SubdivideTask(data map[string]any) map[string]any {
 		"status":               "subdivided",
 		"original_task":        task,
 		"sub_tasks":            subTasks,
-		"subdivision_strategy": getSubdivisionStrategy(hasPlanningWork, hasCodeWork, hasMultipleSteps),
+		"subdivision_strategy": "multi_agent_sequential",
 	}
 }
 
@@ -798,29 +937,17 @@ func ExecuteTaskWithSubdivision(data map[string]any) map[string]any {
 		return map[string]any{"error": "task is required"}
 	}
 
-	var subTasks []SubTask
-
-	if subdivisionResult, ok := data["subdivision_result"].(map[string]any); ok {
-		if subTasksInterface, exists := subdivisionResult["sub_tasks"].([]SubTask); exists {
-			subTasks = subTasksInterface
-		}
-	}
-
-	if len(subTasks) == 0 {
-		subdivisionResult := SubdivideTask(map[string]any{
-			"task":         task,
-			"max_subtasks": 5,
-		})
-
+	subdivisionResult, ok := data["subdivision_result"].(map[string]any)
+	if !ok {
+		subdivisionResult = SubdivideTask(map[string]any{"task": task, "max_subtasks": 5})
 		if subdivisionResult["error"] != nil {
 			return subdivisionResult
 		}
+	}
 
-		if subTasksInterface, ok := subdivisionResult["sub_tasks"].([]SubTask); ok {
-			subTasks = subTasksInterface
-		} else {
-			return map[string]any{"error": "failed to subdivide task"}
-		}
+	subTasks, ok := subdivisionResult["sub_tasks"].([]SubTask)
+	if !ok {
+		return map[string]any{"error": "failed to subdivide task"}
 	}
 
 	executionID := fmt.Sprintf("exec_%d", time.Now().UnixNano())
@@ -843,84 +970,11 @@ func ExecuteTaskWithSubdivision(data map[string]any) map[string]any {
 	taskExecutions[executionID] = execution
 	mutex.Unlock()
 
-	results := make([]map[string]any, 0)
-	completedTasks := make(map[string]bool)
-
-	for len(completedTasks) < len(subTasks) {
-		progress := false
-
-		for _, subTask := range subTasks {
-			if completedTasks[subTask.ID] {
-				continue
-			}
-
-			dependenciesMet := true
-			for _, dep := range subTask.Dependencies {
-				if !completedTasks[dep] {
-					dependenciesMet = false
-					break
-				}
-			}
-
-			if !dependenciesMet {
-				continue
-			}
-
-			fmt.Printf("Executing subtask: %s\n", subTask.Description)
-
-			result := routeToAgent(subTask.AgentType, map[string]any{
-				"id":          subTask.ID,
-				"description": subTask.Description,
-				"type":        subTask.Type,
-				"context":     subTask.Context,
-			})
-
-			results = append(results, result)
-			completedTasks[subTask.ID] = true
-
-			mutex.Lock()
-			if result["error"] != nil {
-				execution.FailedTasks++
-				execution.Errors = append(execution.Errors, fmt.Sprintf("Task %s failed: %v", subTask.ID, result["error"]))
-			} else {
-				execution.CompletedTasks++
-			}
-			execution.PendingTasks--
-			execution.Progress = float64(execution.CompletedTasks) / float64(execution.TotalTasks)
-			execution.Results = results
-			mutex.Unlock()
-
-			progress = true
-		}
-
-		if !progress {
-			break
-		}
-	}
-
-	mutex.Lock()
-	endTime := time.Now()
-	execution.EndTime = &endTime
-	if execution.FailedTasks == 0 {
-		execution.Status = "completed"
-	} else if execution.CompletedTasks > 0 {
-		execution.Status = "partial_success"
-	} else {
-		execution.Status = "failed"
-	}
-	mutex.Unlock()
+	go monitorAndExecuteTasks(executionID, task, "unknown")
 
 	return map[string]any{
-		"status":       "execution_completed",
+		"status":       "task_initiated",
 		"execution_id": executionID,
-		"sub_tasks":    subTasks,
-		"results":      results,
-		"execution_summary": map[string]any{
-			"total":     execution.TotalTasks,
-			"completed": execution.CompletedTasks,
-			"failed":    execution.FailedTasks,
-			"progress":  execution.Progress,
-		},
 	}
 }
 
@@ -1635,7 +1689,7 @@ func determineAgentType(task map[string]any) string {
 	taskType := strings.ToLower(getStringFromMap(task, "type", ""))
 
 	codeKeywords := []string{"code", "implement", "develop", "build", "function", "class", "module", "debug", "fix", "program"}
-	planKeywords := []string{"plan", "design", "analyze", "strategy", "organize", "structure", "approach", "concept"}
+	planKeywords := []string{"plan", "design", "analyze", "strategy", "organize", "structure", "approach", "concept", "replan", "fix", "error"}
 
 	for _, keyword := range codeKeywords {
 		if strings.Contains(description, keyword) || strings.Contains(taskType, keyword) {
@@ -2067,7 +2121,74 @@ func loadOrchestratorContext() error {
 		}
 	}
 
+	if regAgents, ok := contextData["registered_agents"].(map[string]any); ok {
+		for k, v := range regAgents {
+			if metadata, ok := v.(map[string]any); ok {
+				agentMetadata := &repository.AgentMetadata{
+					ID:             metadata["id"].(string),
+					Name:           metadata["name"].(string),
+					Version:        metadata["version"].(string),
+					Type:           repository.AgentType(metadata["type"].(string)),
+					Instructions:   metadata["instructions"].(string),
+					MaxConcurrency: int(metadata["max_concurrency"].(float64)),
+					Timeout:        time.Duration(metadata["timeout"].(float64)),
+					Tags:           getStringSliceFromMap(metadata, "tags"),
+					Endpoints:      getMapStringFromMap(metadata, "endpoints"),
+					Status:         metadata["status"].(string),
+					LastActive:     parseTime(metadata["last_active"]),
+				}
+				if ctx, ok := metadata["context"].(map[string]any); ok {
+					agentMetadata.Context = ctx
+				}
+				RegisteredAgents[k] = agentMetadata
+			}
+		}
+	}
+
+	if ch, ok := contextData["context_history"].([]any); ok {
+		contextHistory = make([]ContextSnapshot, 0, len(ch))
+		for _, v := range ch {
+			if snapshotMap, ok := v.(map[string]any); ok {
+				snapshot := ContextSnapshot{
+					Timestamp:      parseTime(snapshotMap["timestamp"]),
+					GlobalContext:  getMapFromMap(snapshotMap, "global_context"),
+					AgentContexts:  getMapFromMap(snapshotMap, "agent_contexts"),
+					ActiveAgents:   getStringSliceFromMap(snapshotMap, "active_agents"),
+					WorkflowStates: getMapFromMap(snapshotMap, "workflow_states"),
+					Reason:         getStringFromMap(snapshotMap, "reason", ""),
+				}
+				contextHistory = append(contextHistory, snapshot)
+			}
+		}
+	}
+
 	return nil
+}
+
+func getMapStringFromMap(m map[string]any, key string) map[string]string {
+	if val, ok := m[key].(map[string]string); ok {
+		return val
+	}
+	if val, ok := m[key].(map[string]any); ok {
+		result := make(map[string]string)
+		for k, v := range val {
+			if s, ok := v.(string); ok {
+				result[k] = s
+			}
+		}
+		return result
+	}
+	return make(map[string]string)
+}
+
+func parseTime(t any) time.Time {
+	if tStr, ok := t.(string); ok {
+		parsed, err := time.Parse(time.RFC3339, tStr)
+		if err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func createContextSnapshot(reason string) {
@@ -2673,14 +2794,20 @@ func executeTaskWithAgent(agentID string, task map[string]any, contextResult map
 	taskDescription := getStringFromMap(task, "description", "")
 	globalCtx := contextResult["global_context"]
 
-	content := fmt.Sprintf("Task: %s\nContext: %v", taskDescription, globalCtx)
+	// Create a new contents array for the conversational context
+	contents := make([]map[string]any, 0)
 
-	contents := []map[string]any{
-		{
-			"parts": []map[string]any{
-				{"text": content},
-			},
+	// Append a message with the role of "user" to represent the current query
+	contents = append(contents, map[string]any{
+		"role": "user",
+		"parts": []map[string]any{
+			{"text": fmt.Sprintf("Task: %s\nContext: %v", taskDescription, globalCtx)},
 		},
+	})
+
+	// Check for conversation history in global context and append it
+	if history, ok := globalContext["conversation_history"].([]map[string]any); ok {
+		contents = append(contents, history...)
 	}
 
 	var output map[string]any
@@ -2710,11 +2837,35 @@ func executeTaskWithAgent(agentID string, task map[string]any, contextResult map
 
 	if output["error"] != nil {
 		return map[string]any{
-			"status":   "error",
+			"status":   "failed",
 			"agent_id": agentID,
-			"message":  output["error"],
+			"error":    output["error"],
 		}
 	}
+
+	responseParts := make([]map[string]any, 0)
+	if outputParts, ok := output["output"].([]map[string]any); ok {
+		for _, part := range outputParts {
+			if text, textExists := part["text"].(string); textExists {
+				responseParts = append(responseParts, map[string]any{
+					"text": text,
+				})
+			} else {
+				responseParts = append(responseParts, part)
+			}
+		}
+	}
+
+	mutex.Lock()
+	if globalContext["conversation_history"] == nil {
+		globalContext["conversation_history"] = make([]map[string]any, 0)
+	}
+	globalContext["conversation_history"] = append(globalContext["conversation_history"].([]map[string]any), map[string]any{
+		"role":  "model",
+		"parts": responseParts,
+	})
+	mutex.Unlock()
+	saveOrchestratorContext()
 
 	return map[string]any{
 		"status":   "completed",
@@ -2738,7 +2889,11 @@ func isAgentTypeRegistered(agentType string) bool {
 
 func determineAgentTypeFromQuery(query string) string {
 	lowerQuery := strings.ToLower(query)
-	if strings.Contains(lowerQuery, "plan") || strings.Contains(lowerQuery, "organize") || strings.Contains(lowerQuery, "break down") || strings.Contains(lowerQuery, "workflow") || (strings.Contains(lowerQuery, "make") && (strings.Contains(lowerQuery, "app") || strings.Contains(lowerQuery, "game"))) || strings.Contains(lowerQuery, "3d rendering") {
+	// Check for simple conversational queries first
+	if strings.Contains(lowerQuery, "hello") || strings.Contains(lowerQuery, "hi") || strings.Contains(lowerQuery, "how are you") || strings.Contains(lowerQuery, "what's up") {
+		return "general_responder"
+	}
+	if strings.Contains(lowerQuery, "plan") || strings.Contains(lowerQuery, "organize") || strings.Contains(lowerQuery, "break down") || strings.Contains(lowerQuery, "workflow") || (strings.Contains(lowerQuery, "make") && (strings.Contains(lowerQuery, "app") || strings.Contains(lowerQuery, "game") || strings.Contains(lowerQuery, "cli tool"))) || strings.Contains(lowerQuery, "3d rendering") {
 		return string(repository.AgentPlanner)
 	}
 
