@@ -1,48 +1,144 @@
 package repository
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
-// Enhanced TaskTracker with better error tracking
+type TaskStatus string
+
+const (
+	StatusPending    TaskStatus = "pending"
+	StatusInProgress TaskStatus = "in_progress"
+	StatusCompleted  TaskStatus = "completed"
+	StatusFailed     TaskStatus = "failed"
+	StatusStuck      TaskStatus = "stuck"
+)
+
 type TaskTracker struct {
-	OriginalTask               string
-	CurrentPhase               string
-	CompletedSteps             []string
-	PendingSteps               []string
-	FilesCreated               []string
-	FilesModified              []string
-	CommandsRun                []string
-	FailedCommands             []string
-	LastAIResponse             string
-	Iteration                  int
-	TaskCompleted              bool
-	ConsecutiveReadCalls       int
-	ConsecutiveSameCommands    int
-	LastActionType             string
-	StuckCounter               int
-	ErrorsFound                bool
-	BuildAttempted             bool
-	LastFunctionCall           string
-	LastError                  string
-	ErrorCount                 int
-	LastSuccessfulCommand      string
-	DependencyErrors           []string
-	RequiresFixing             bool
-	ProjectStructureRetrieved  bool
-	EmptyResponseCount         int
-	ConversationResetCount     int
-	LastFunctionResponse       map[string]any
-	FunctionCallsThisIteration int
-	ConsecutiveFailures        int
-	LastSuccessTime            time.Time
-	StartTime                  time.Time
-	MaxExecutionTime           time.Duration // Maximum execution time
-	IdleTime                   time.Duration // Time since last meaningful action
+	// Core Task Info
+	TaskID    string     `json:"taskId"`
+	Title     string     `json:"title"`
+	Status    TaskStatus `json:"status"`
+	Priority  int        `json:"priority"` // 1-5, 5 being highest
+	CreatedBy string     `json:"createdBy"`
+
+	// Progress Tracking
+	CurrentPhase   string   `json:"currentPhase"`
+	CompletedSteps []string `json:"completedSteps"`
+	PendingSteps   []string `json:"pendingSteps"`
+
+	// File Operations
+	FilesCreated  []string `json:"filesCreated"`
+	FilesModified []string `json:"filesModified"`
+
+	// Command Execution
+	CommandsRun           []string `json:"commandsRun"`
+	FailedCommands        []string `json:"failedCommands"`
+	LastSuccessfulCommand string   `json:"lastSuccessfulCommand"`
+
+	// AI Interaction
+	LastAIResponse       string         `json:"lastAiResponse"`
+	LastFunctionCall     string         `json:"lastFunctionCall"`
+	LastFunctionResponse map[string]any `json:"lastFunctionResponse"`
+
+	// Iteration & Loop Prevention
+	Iteration                  int `json:"iteration"`
+	ConsecutiveReadCalls       int `json:"consecutiveReadCalls"`
+	ConsecutiveSameCommands    int `json:"consecutiveSameCommands"`
+	FunctionCallsThisIteration int `json:"functionCallsThisIteration"`
+	EmptyResponseCount         int `json:"emptyResponseCount"`
+
+	// Error Handling
+	LastError           string   `json:"lastError"`
+	ErrorCount          int      `json:"errorCount"`
+	DependencyErrors    []string `json:"dependencyErrors"`
+	ConsecutiveFailures int      `json:"consecutiveFailures"`
+
+	// State Flags
+	TaskCompleted             bool `json:"taskCompleted"`
+	ErrorsFound               bool `json:"errorsFound"`
+	BuildAttempted            bool `json:"buildAttempted"`
+	RequiresFixing            bool `json:"requiresFixing"`
+	ProjectStructureRetrieved bool `json:"projectStructureRetrieved"`
+
+	// Advanced Tracking
+	LastActionType         string `json:"lastActionType"`
+	ConversationResetCount int    `json:"conversationResetCount"`
+
+	// Timing
+	StartTime        time.Time      `json:"startTime"`
+	LastSuccessTime  time.Time      `json:"lastSuccessTime"`
+	MaxExecutionTime time.Duration  `json:"maxExecutionTime"`
+	IdleTime         time.Duration  `json:"idleTime"`
+	PlanningComplete bool           `json:"planningComplete"`
+	ExecutionPlan    map[string]any `json:"executionPlan"`
+	NextStep         string         `json:"nextStep"`
 }
 
+func (T *TaskTracker) ToObject() map[string]any {
+
+	// Convert struct to JSON
+	jsonData, err := json.Marshal(T)
+	if err != nil {
+		fmt.Println("Error marshaling JSON:", err)
+		return nil
+	}
+
+	// Unmarshal JSON into a map[string]any
+	var taskMap map[string]any
+	err = json.Unmarshal(jsonData, &taskMap)
+	if err != nil {
+		fmt.Println("Error unmarshaling JSON:", err)
+		return nil
+	}
+	return taskMap
+}
+func NewTask(params map[string]any) map[string]any {
+	title, _ := params["title"].(string)
+	createdBy, _ := params["createdBy"].(string)
+	status, _ := params["status"].(TaskStatus)
+
+	// Extract planning data if provided
+	planningComplete, _ := params["planningComplete"].(bool)
+	executionPlan, _ := params["executionPlan"].(map[string]any)
+	nextStep, _ := params["nextStep"].(string)
+
+	tracker := TaskTracker{
+		TaskID:               generateTaskID(),
+		Title:                title,
+		Status:               status,
+		Priority:             3, // Default medium priority
+		CreatedBy:            createdBy,
+		CurrentPhase:         "initialization",
+		CompletedSteps:       make([]string, 0),
+		PendingSteps:         make([]string, 0),
+		FilesCreated:         make([]string, 0),
+		FilesModified:        make([]string, 0),
+		CommandsRun:          make([]string, 0),
+		FailedCommands:       make([]string, 0),
+		DependencyErrors:     make([]string, 0),
+		StartTime:            time.Now(),
+		LastSuccessTime:      time.Now(),
+		MaxExecutionTime:     30 * time.Minute,
+		LastFunctionResponse: make(map[string]any),
+		PlanningComplete:     planningComplete,
+		ExecutionPlan:        executionPlan,
+		NextStep:             nextStep,
+	}
+
+	return map[string]any{
+		"error":  nil,
+		"output": tracker.ToObject(),
+	}
+}
+
+// Helper function to generate unique task ID
+func generateTaskID() string {
+	return fmt.Sprintf("task_%d", time.Now().UnixNano())
+}
 func ShouldTerminate(tracker *TaskTracker) bool {
 	// Time-based termination
 	if time.Since(tracker.StartTime) > tracker.MaxExecutionTime {
@@ -97,7 +193,7 @@ func IsTaskLikelyComplete(tracker *TaskTracker) bool {
 	}
 
 	// Hello world type tasks
-	taskLower := strings.ToLower(tracker.OriginalTask)
+	taskLower := strings.ToLower(tracker.Title)
 	if strings.Contains(taskLower, "hello") && strings.Contains(taskLower, "world") {
 		return len(tracker.FilesCreated) > 0 || len(tracker.FilesModified) > 0
 	}
@@ -120,11 +216,6 @@ func ShouldPauseForUserInput(tracker *TaskTracker) bool {
 	// Don't pause too early
 	if tracker.Iteration < 5 {
 		return false
-	}
-
-	// Pause if we're clearly stuck
-	if tracker.StuckCounter > 3 {
-		return true
 	}
 
 	// Pause if too many dependency errors

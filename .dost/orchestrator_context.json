@@ -1,0 +1,73 @@
+{
+  "agent_contexts": {
+    "coder-b57be394-3c2d-4548-b7e1-761db400b173": {},
+    "coder_1756641110069306300": {},
+    "coder_1756641153394708600": {},
+    "coder_1756641186427353500": {},
+    "coder_1756642176807218900": {},
+    "coder_1756642206580585000": {},
+    "planner-90204b8c-87cb-486c-b593-d69f4cf6814c": {},
+    "planner-f79ef1a4-c59c-4e9c-bace-c473624073d4": {},
+    "planner_1756641110069306300": {},
+    "planner_1756641153394708600": {},
+    "planner_1756641186427353500": {},
+    "planner_1756642176807218900": {},
+    "planner_1756642206580585000": {}
+  },
+  "context_history": [
+    {
+      "timestamp": "2025-08-31T22:25:17.5066776+05:30",
+      "global_context": {
+        "last_query": "hello how are you",
+        "query_timestamp": "2025-08-31T22:25:17.5066776+05:30"
+      },
+      "agent_contexts": {
+        "coder-b57be394-3c2d-4548-b7e1-761db400b173": {},
+        "coder_1756641110069306300": {},
+        "coder_1756641153394708600": {},
+        "coder_1756641186427353500": {},
+        "coder_1756642176807218900": {},
+        "coder_1756642206580585000": {},
+        "planner-90204b8c-87cb-486c-b593-d69f4cf6814c": {},
+        "planner-f79ef1a4-c59c-4e9c-bace-c473624073d4": {},
+        "planner_1756641110069306300": {},
+        "planner_1756641153394708600": {},
+        "planner_1756641186427353500": {},
+        "planner_1756642176807218900": {},
+        "planner_1756642206580585000": {}
+      },
+      "active_agents": [
+        "planner-90204b8c-87cb-486c-b593-d69f4cf6814c"
+      ],
+      "workflow_states": {},
+      "reason": "agents_registered"
+    }
+  ],
+  "global_context": {
+    "last_query": "hello how are you",
+    "query_timestamp": "2025-08-31T22:25:17.5066776+05:30"
+  },
+  "last_updated": "2025-08-31T22:25:17.5066776+05:30",
+  "registered_agents": {
+    "planner-90204b8c-87cb-486c-b593-d69f4cf6814c": {
+      "id": "planner-90204b8c-87cb-486c-b593-d69f4cf6814c",
+      "name": "planner",
+      "version": "0.1.0",
+      "type": "planner",
+      "instructions": "You are a highly intelligent and meticulous planner agent. Your primary role is to decompose complex tasks into smaller, manageable subtasks, create detailed execution plans, manage workflows, and track progress. You are capable of analyzing task descriptions, assessing complexity, identifying dependencies, and assigning subtasks to the appropriate specialized agents (e.g., 'coder', 'analyst').\n\nYour core responsibilities include:\n1.  **Decomposition**: Breaking down high-level objectives into actionable steps and subtasks.\n2.  **Planning**: Creating comprehensive 'ExecutionPlan' objects with subtasks, timelines, risk factors, and success metrics.\n3.  **Coordination**: Defining workflows and dependencies to ensure a logical and efficient execution flow.\n4.  **Monitoring**: Tracking the progress of tasks and plans, identifying blockers, and providing recommendations.\n\nYou have access to a suite of powerful tools to perform these tasks. You must use these tools whenever a request requires planning, task management, or progress evaluation. Do not attempt to complete the task yourself; instead, generate a plan or a series of tool calls that other agents can execute.\n\nWhen a user provides a task, your first action should be to analyze it. If it's a complex or multi-step task, use the 'breakdown_task' or 'create_workflow' tool. If the task is to create a new plan, use the 'create_task' tool with the 'execution_plan' parameter. If you need to update an existing plan, use the 'update_plan' tool. Always prioritize using the provided tools to fulfill the user's request.",
+      "context": {},
+      "last_active": "2025-08-31T22:25:17.5066776+05:30",
+      "max_concurrency": 3,
+      "timeout": 300000000000,
+      "status": "active",
+      "tags": [
+        "planner",
+        "agent"
+      ],
+      "endpoints": {
+        "http": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+      }
+    }
+  },
+  "workflow_states": {}
+}

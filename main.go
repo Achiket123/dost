@@ -5,10 +5,11 @@ import (
 	"os"
 )
 
+var Environment = "dev"
+
 func main() {
+
 	if app.Execute() != nil {
 		os.Exit(1)
 	}
 }
-
- 

@@ -1,2 +1,2 @@
 build:
-	go build -ldflags="-w -s" -o  dost.exe -v ./main.go
+	go build -ldflags="-w -s" -o  dost-ai.exe -v ./main.go

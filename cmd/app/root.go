@@ -2,15 +2,14 @@ package app
 
 import (
 	"dost/internal/config"
-	"dost/internal/handler"
 	"dost/internal/repository"
 	"dost/internal/service"
-	"encoding/json"
+	"dost/internal/service/coder"
+	"dost/internal/service/orchestrator"
+	"dost/internal/service/planner"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -21,943 +20,569 @@ var (
 	Cfg     *config.Config
 )
 
+const environment = "dev"
+
 var INITIAL_CONTEXT = 1
 
-const MAXIMUM_CONTEXT_AWARENESS = 5
-
-// rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "dost",
-	Short: "A brief description of your application",
+	Short: "AI-powered development orchestrator",
 	Long: `
-DOST is an AI CLI  tool for Developers that empowers them to create and organize their projects.
-It is designed to be simple and easy to use, with a focus on developer productivity.
+DOST is an AI CLI tool for Developers that empowers them to create and organize their projects.
+It features an intelligent orchestrator that can subdivide complex tasks and route them to specialized agents.
 
-You can use it to manage your projects, run commands, and automate tasks.
+Key Features:
+- Intelligent task subdivision and routing
+- Multi-agent coordination with caching
+- Context-aware task execution
+- Workflow management and monitoring
+
 USING GEMINI API: DOST uses the Gemini API to provide AI-powered features.
-It can help you with code generation, code completion, and more.
+It can help you with code generation, planning, analysis, and more.
 
-SETUP: To set up DOST, you need to create a configuration file in  directory add the path to DOST.
-The configuration file should be named ".dost.yaml" and should contain your API key and other settings.
-The full path to the configuration file should be provided in the "config" flag.
+SETUP: Create a configuration file ".dost.yaml" in your project directory with your API key and settings.
 `,
 	Args: cobra.ArbitraryArgs,
 }
 
-// Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() error {
 	return rootCmd.Execute()
 }
 
 func init() {
-	initConfig()
-	cobra.OnInitialize(initConfig)
-
-	rootCmd.Run = func(cmd *cobra.Command, args []string) {
-		if len(args) == 0 {
-			fmt.Println("Please provide a prompt as the first argument")
-			return
-		}
-
-		originalTask := strings.Join(args, " ")
-
-		// Initialize JSON cache system
-		if err := service.InitializeCache(); err != nil {
-			fmt.Printf("Error initializing cache: %v\n", err)
-			return
-		}
-
-		// Set system instruction in cache
-		service.SetSystemInstruction(repository.Instructions)
-
-		// Initialize enhanced task tracker with time-based controls
-		tracker := &repository.TaskTracker{
-			OriginalTask:               originalTask,
-			CurrentPhase:               "INITIALIZATION",
-			CompletedSteps:             []string{},
-			PendingSteps:               []string{},
-			FilesCreated:               []string{},
-			FilesModified:              []string{},
-			CommandsRun:                []string{},
-			FailedCommands:             []string{},
-			Iteration:                  0,
-			TaskCompleted:              false,
-			ConsecutiveReadCalls:       0,
-			ConsecutiveSameCommands:    0,
-			LastActionType:             "",
-			StuckCounter:               0,
-			ErrorsFound:                false,
-			BuildAttempted:             false,
-			LastFunctionCall:           "",
-			LastError:                  "",
-			ErrorCount:                 0,
-			LastSuccessfulCommand:      "",
-			DependencyErrors:           []string{},
-			RequiresFixing:             false,
-			ProjectStructureRetrieved:  false,
-			EmptyResponseCount:         0,
-			ConversationResetCount:     0,
-			LastFunctionResponse:       nil,
-			FunctionCallsThisIteration: 0,
-			ConsecutiveFailures:        0,
-			StartTime:                  time.Now(),
-			LastSuccessTime:            time.Now(),
-			MaxExecutionTime:           10 * time.Minute, // Maximum 10 minutes execution
-			IdleTime:                   0,
-		}
-
-		service.PutJSONCache(map[string]any{"user": originalTask, "tracker": tracker})
-
-		// Add initial user message to conversation history
-		service.AddUserMessage(originalTask)
-
-		GoogleAI := handler.NewGoogleAI(Cfg, originalTask)
-		functionalActionsCount := 0
-
-		fmt.Printf("🎯 TASK: %s\n", originalTask)
-		fmt.Printf("📋 Starting autonomous agent...\n")
-
-		// Event-driven execution loop without fixed iterations
-		for {
-			tracker.Iteration++
-			tracker.FunctionCallsThisIteration = 0
-			// iterationStartTime := time.Now()
-
-			// Check termination conditions first
-			if repository.ShouldTerminate(tracker) {
-				break
-			}
-
-			// Handle stuck states
-			if isStuckInAdvancedLoop(tracker) {
-				fmt.Printf("⚠️ ADVANCED LOOP DETECTED! Taking corrective action...\n")
-				if !handler.HandleAdvancedStuckState(tracker, &GoogleAI) {
-					fmt.Printf("🛑 Unable to recover from stuck state. Terminating.\n")
-					break
-				}
-			}
-
-			tracker.CurrentPhase = determineEnhancedPhase(tracker, functionalActionsCount)
-			fmt.Printf("\n=== ITERATION %d - PHASE: %s ===\n", tracker.Iteration, tracker.CurrentPhase)
-
-			// Enhanced contextual prompt with error analysis
-			contextualPrompt := buildEnhancedContextualPrompt(tracker, originalTask)
-			GoogleAI.Reset(contextualPrompt)
-
-			returns := service.RequestTool(getArgsWithConversationHistory())
-
-			// Handle API errors with exponential backoff
-			if returns["error"] != nil {
-				errorStr := fmt.Sprintf("%v", returns["error"])
-				fmt.Printf("❌ API Error: %s\n", errorStr)
-
-				if strings.Contains(errorStr, "429") || strings.Contains(errorStr, "rate limit") || strings.Contains(errorStr, "quota") {
-					fmt.Println("🚫 RATE LIMITED - Please wait and try again later.")
-					return
-				}
-
-				tracker.ConsecutiveFailures++
-				if tracker.ConsecutiveFailures > 3 {
-					fmt.Printf("🛑 Too many consecutive API failures. Terminating.\n")
-					break
-				}
-
-				sleepTime := time.Duration(tracker.ConsecutiveFailures*5) * time.Second
-				fmt.Printf("⏳ Waiting %v seconds before retrying...\n", sleepTime)
-				time.Sleep(sleepTime)
-				continue
-			}
-
-			// Reset consecutive failures on successful API call
-			tracker.ConsecutiveFailures = 0
-
-			// Process AI response with new conversation flow rules
-			iterationActions := processAIResponseWithProperFlow(returns, tracker, GoogleAI)
-			functionalActionsCount += iterationActions
-
-			// Update progress tracking
-			if iterationActions > 0 {
-				tracker.LastSuccessTime = time.Now()
-				tracker.IdleTime = 0
-			} else {
-				tracker.IdleTime = time.Since(tracker.LastSuccessTime)
-			}
-
-			fmt.Printf("📊 Actions this iteration: %d | Total functional actions: %d\n", tracker.FunctionCallsThisIteration, functionalActionsCount)
-			fmt.Printf("📈 Progress: %s\n", generateEnhancedProgressSummary(tracker))
-			fmt.Printf("⏱️ Execution time: %v | Idle time: %v\n", time.Since(tracker.StartTime), tracker.IdleTime)
-
-			// Enhanced task completion detection
-			tracker.TaskCompleted = repository.EvaluateTaskCompletionWithErrorAnalysis(tracker, returns, originalTask)
-
-			if tracker.TaskCompleted {
-				fmt.Printf("\n✅ TASK COMPLETED SUCCESSFULLY!\n")
-				printTaskSummary(tracker, functionalActionsCount)
-				break
-			}
-
-			// Check if we should continue or pause for user input
-			if repository.ShouldPauseForUserInput(tracker) {
-				fmt.Printf("\n🤔 Task seems complex or stuck. Continue? (y/N): ")
-				var response string
-				fmt.Scanln(&response)
-				if strings.ToLower(response) != "y" && strings.ToLower(response) != "yes" {
-					fmt.Printf("🛑 User requested termination.\n")
-					break
-				}
-				tracker.StuckCounter = 0 // Reset after user confirmation
-			}
-		}
-
-		// Final status report
-		executionTime := time.Since(tracker.StartTime)
-		if !tracker.TaskCompleted {
-			fmt.Printf("\n⚠️ Task terminated after %v\n", executionTime)
-			fmt.Printf("📊 Final stats: %d functional actions across %d iterations\n", functionalActionsCount, tracker.Iteration)
-			printTaskSummary(tracker, functionalActionsCount)
-		}
-	}
+	cobra.OnInitialize(InitConfig)
+	rootCmd.Run = handleUserQuery
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file default is C:/.dost.yaml")
 	rootCmd.PersistentFlags().String("ai", "", "AI query for Gemini API")
 	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-// Enhanced termination conditions - the main logic for when to stop
-
-// Print comprehensive task summary
-func printTaskSummary(tracker *repository.TaskTracker, functionalActionsCount int) {
-	fmt.Printf("📋 Task Summary:\n")
-	fmt.Printf("   - Duration: %v\n", time.Since(tracker.StartTime))
-	fmt.Printf("   - Iterations: %d\n", tracker.Iteration)
-	fmt.Printf("   - Files created: %v\n", tracker.FilesCreated)
-	fmt.Printf("   - Files modified: %v\n", tracker.FilesModified)
-	fmt.Printf("   - Commands executed: %v\n", tracker.CommandsRun)
-	fmt.Printf("   - Failed commands: %v\n", tracker.FailedCommands)
-	fmt.Printf("   - Total functional actions: %d\n", functionalActionsCount)
-	fmt.Printf("   - Error count: %d\n", tracker.ErrorCount)
-	fmt.Printf("   - Final phase: %s\n", tracker.CurrentPhase)
-
-	// Success rate calculation
-	totalCommands := len(tracker.CommandsRun) + len(tracker.FailedCommands)
-	if totalCommands > 0 {
-		successRate := float64(len(tracker.CommandsRun)) / float64(totalCommands) * 100
-		fmt.Printf("   - Command success rate: %.1f%%\n", successRate)
-	}
-}
-
-// New AI response processing with proper conversation flow and FIXED function call/response synchronization
-func processAIResponseWithProperFlow(returns map[string]any, tracker *repository.TaskTracker, GoogleAI *handler.GoogleAI) int {
-	actionCount := 0
-
-	if returns["output"] == nil {
-		fmt.Println("⚠️ No output field in response")
-		tracker.EmptyResponseCount++
-		return actionCount
-	}
-
-	// Handle different response formats
-	switch output := returns["output"].(type) {
-	case []map[string]any:
-		return processOutputArrayWithProperFlow(output, tracker, GoogleAI)
-	case []interface{}:
-		return processGenericArrayWithProperFlow(output, tracker, GoogleAI)
-	case string:
-		return processStringOutputWithProperFlow(output, tracker)
-	case map[string]any:
-		// Handle single map response
-		singleOutput := []map[string]any{output}
-		return processOutputArrayWithProperFlow(singleOutput, tracker, GoogleAI)
-	default:
-		fmt.Printf("⚠️ Unexpected output type: %T\n", output)
-		tracker.EmptyResponseCount++
-		return 0
-	}
-}
-
-// FIXED: Proper function call and response synchronization
-func processOutputArrayWithProperFlow(outputs []map[string]any, tracker *repository.TaskTracker, GoogleAI *handler.GoogleAI) int {
-	actionCount := 0
-	hasText := false
-	hasFunction := false
-	lastText := ""
-
-	// Separate function calls and collect them
-	var functionCalls []service.FunctionCallData
-	var functionResults []map[string]any
-
-	// Check if output is empty array
-	if len(outputs) == 0 {
-		fmt.Println("⚠️ Empty output array - skipping")
-		tracker.EmptyResponseCount++
-		return 0
-	}
-
-	// Process each output item
-	for i, v := range outputs {
-		fmt.Printf("Processing output %d: %+v\n", i, v)
-
-		// Process text content first
-		if text, exists := v["text"]; exists && text != nil {
-			textStr := fmt.Sprintf("%v", text)
-			cleanText := cleanAndValidateText(textStr)
-
-			if cleanText != "" && cleanText != "[]" {
-				fmt.Printf("AI Response: %s\n", cleanText)
-				tracker.LastAIResponse = cleanText
-				lastText = cleanText
-				hasText = true
-			}
-		}
-
-		// Process function calls - collect them first, execute later
-		if functionName, exists := v["function_name"]; exists && functionName != nil {
-			funcNameStr, ok := functionName.(string)
-			if !ok || funcNameStr == "" {
-				fmt.Printf("⚠️ Invalid function name at index %d\n", i)
-				continue
-			}
-
-			// Get parameters with better error handling
-			parameters := make(map[string]any)
-			if params, exists := v["parameters"]; exists {
-				if paramMap, ok := params.(map[string]any); ok {
-					parameters = paramMap
-				} else if paramStr, ok := params.(string); ok && paramStr != "" {
-					if err := json.Unmarshal([]byte(paramStr), &parameters); err != nil {
-						fmt.Printf("⚠️ Failed to parse parameters: %v\n", err)
-					}
-				}
-			}
-
-			// Add to function calls list
-			functionCalls = append(functionCalls, service.FunctionCallData{
-				Name: funcNameStr,
-				Args: parameters,
-			})
-
-			hasFunction = true
-		}
-	}
-
-	// First, add model response with function calls if we have both text and functions
-	if hasText && hasFunction {
-		// Add model response with both text and function calls
-		service.AddModelResponse(lastText, functionCalls)
-	} else if hasFunction && !hasText {
-		// Add model response with only function calls (empty text)
-		service.AddModelResponse("", functionCalls)
-	} else if hasText && !hasFunction {
-		// Add model response with only text (no function calls)
-		service.AddModelResponse(lastText, []service.FunctionCallData{})
-	}
-
-	// Now execute the function calls and collect results
-	if hasFunction {
-		for _, funcCall := range functionCalls {
-			fmt.Printf("🔧 Executing function: %s with params: %+v\n", funcCall.Name, funcCall.Args)
-
-			// Execute the function and get result
-			result := executeFunctionCallWithResult(funcCall.Name, map[string]any{
-				"function_name": funcCall.Name,
-				"parameters":    funcCall.Args,
-			}, tracker, GoogleAI)
-
-			actionCount++
-			tracker.FunctionCallsThisIteration++
-
-			// Store function result for conversation
-			functionResults = append(functionResults, map[string]any{
-				"name":       funcCall.Name,
-				"parameters": funcCall.Args,
-				"result":     result,
-			})
-
-			tracker.LastFunctionCall = funcCall.Name
-			tracker.EmptyResponseCount = 0
-		}
-
-		// Add function responses to conversation
-		addFunctionResponsesToConversation(functionResults, tracker)
-	} else if hasText {
-		// Only text response - add user guidance
-		addUserGuidanceAfterTextOnly(tracker)
-	} else {
-		// Empty response - skip and increment counter
-		fmt.Println("⚠️ Empty or invalid response detected - skipping")
-		tracker.EmptyResponseCount++
-		return 0
-	}
-
-	return actionCount
-}
-
-func processGenericArrayWithProperFlow(outputs []interface{}, tracker *repository.TaskTracker, GoogleAI *handler.GoogleAI) int {
-	actionCount := 0
-
-	for i, item := range outputs {
-		if itemMap, ok := item.(map[string]any); ok {
-			singleOutput := []map[string]any{itemMap}
-			actionCount += processOutputArrayWithProperFlow(singleOutput, tracker, GoogleAI)
-		} else {
-			fmt.Printf("⚠️ Unexpected item type at index %d: %T\n", i, item)
-		}
-	}
-
-	return actionCount
-}
-
-func processStringOutputWithProperFlow(output string, tracker *repository.TaskTracker) int {
-	cleanText := cleanAndValidateText(output)
-
-	// Handle empty responses properly
-	if cleanText == "" || cleanText == "[]" {
-		fmt.Println("⚠️ Empty string output detected - skipping")
-		tracker.EmptyResponseCount++
-		return 0
-	}
-
-	fmt.Printf("AI Text Response: %s\n", cleanText)
-	tracker.LastAIResponse = cleanText
-	tracker.EmptyResponseCount = 0
-
-	// Add model response then user guidance
-	service.AddModelResponse(cleanText, []service.FunctionCallData{})
-	addUserGuidanceAfterTextOnly(tracker)
-
-	return 0
-}
-
-// FIXED: Separate function for adding function responses
-func addFunctionResponsesToConversation(functionResults []map[string]any, tracker *repository.TaskTracker) {
-	parts := []map[string]any{}
-
-	// Add function response parts
-	for _, funcResult := range functionResults {
-		functionResponsePart := map[string]any{
-			"functionResponse": map[string]any{
-				"name": funcResult["name"],
-				"response": map[string]any{
-					"content": funcResult["result"],
-				},
-			},
-		}
-		parts = append(parts, functionResponsePart)
-	}
-
-	// Add guidance text part
-	guidanceText := buildGuidanceText(tracker)
-	textPart := map[string]any{
-		"text": guidanceText,
-	}
-	parts = append(parts, textPart)
-
-	// Add user message with both function responses and guidance
-	if err := service.AddUserMessageWithParts(parts); err != nil {
-		fmt.Printf("⚠️ Error adding user message with parts: %v\n", err)
-	}
-}
-
-// Add user guidance after text-only responses
-func addUserGuidanceAfterTextOnly(tracker *repository.TaskTracker) {
-	guidanceText := buildGuidanceText(tracker)
-	if err := service.AddUserMessage(guidanceText); err != nil {
-		fmt.Printf("⚠️ Error adding user guidance message: %v\n", err)
-	}
-}
-
-// Build appropriate guidance text based on current state
-func buildGuidanceText(tracker *repository.TaskTracker) string {
-	if tracker.TaskCompleted {
-		return "If you think the task is complete, call exit_process(). Otherwise, continue with tool calls. Don't reply with filler text."
-	}
-
-	// Provide specific guidance based on current state
-	var guidance strings.Builder
-
-	if len(tracker.FilesCreated) == 0 && len(tracker.FilesModified) == 0 {
-		guidance.WriteString("Create or modify necessary files using create_files or write_file functions. ")
-	} else if len(tracker.CommandsRun) == 0 {
-		guidance.WriteString("Test your implementation by executing build/run commands using terminal_execute. ")
-	}
-
-	guidance.WriteString("If you think the task is complete, call exit_process(). Otherwise, continue with tool calls. Don't reply with filler text.")
-
-	return guidance.String()
-}
-
-// Enhanced function execution that returns results
-func executeFunctionCallWithResult(function_name string, v map[string]any, tracker *repository.TaskTracker, GoogleAI *handler.GoogleAI) map[string]any {
-	parameters, ok := v["parameters"].(map[string]any)
-	if !ok {
-		parameters = make(map[string]any)
-	}
-
-	var result map[string]any
-
-	switch function_name {
-	case handler.REQUEST_AI_TOOL:
-		handleRequestAIToolEnhanced(parameters, tracker, GoogleAI)
-		result = map[string]any{"status": "ai_tool_requested"}
-
-	case handler.GET_PROJECT_STRUCTURE:
-		temp_func := handler.GeminiTools()[function_name]
-		result = temp_func.Run(parameters)
-		if result["error"] == nil {
-			tracker.CompletedSteps = append(tracker.CompletedSteps, "Retrieved project structure")
-			tracker.ProjectStructureRetrieved = true
-		} else {
-			tracker.ErrorCount++
-			tracker.LastError = fmt.Sprintf("Failed to get project structure: %v", result["error"])
-		}
-		fmt.Printf("🗂️ Project structure retrieved\n")
-
-	case handler.CREATE_FILES:
-		temp_func := handler.GeminiTools()[function_name]
-		result = temp_func.Run(parameters)
-
-		if result["error"] == nil {
-			if fileNames, ok := parameters["file_names"].([]interface{}); ok {
-				for _, fileName := range fileNames {
-					if name, ok := fileName.(string); ok {
-						tracker.FilesCreated = append(tracker.FilesCreated, name)
-					}
-				}
-			}
-			tracker.CompletedSteps = append(tracker.CompletedSteps, "Created file(s)")
-		} else {
-			tracker.ErrorCount++
-			tracker.LastError = fmt.Sprintf("File creation failed: %v", result["error"])
-		}
-
-	case handler.WRITE_FILE:
-		temp_func := handler.GeminiTools()[function_name]
-		result = temp_func.Run(parameters)
-
-		if result["error"] == nil {
-			if fileNames, ok := parameters["file_names"].([]interface{}); ok {
-				for _, fileName := range fileNames {
-					if name, ok := fileName.(string); ok {
-						tracker.FilesModified = append(tracker.FilesModified, name)
-					}
-				}
-			}
-			tracker.CompletedSteps = append(tracker.CompletedSteps, "Modified file(s)")
-		} else {
-			tracker.ErrorCount++
-			tracker.LastError = fmt.Sprintf("File modification failed: %v", result["error"])
-		}
-
-	case handler.TERMINAL_EXECUTE:
-		temp_func := handler.GeminiTools()[function_name]
-		result = temp_func.Run(parameters)
-
-		if command, ok := parameters["command"].(string); ok {
-			if result["error"] == nil {
-				tracker.CommandsRun = append(tracker.CommandsRun, command)
-				tracker.CompletedSteps = append(tracker.CompletedSteps, fmt.Sprintf("Successfully executed: %s", command))
-				tracker.BuildAttempted = true
-				tracker.LastSuccessfulCommand = command
-				tracker.ConsecutiveSameCommands = 0
-
-				// Check for build/compile commands
-				cmdLower := strings.ToLower(command)
-				if strings.Contains(cmdLower, "cmake") || strings.Contains(cmdLower, "make") ||
-					strings.Contains(cmdLower, "build") || strings.Contains(cmdLower, "compile") {
-					tracker.CurrentPhase = "ANALYSIS_AFTER_TEST"
-				}
-			} else {
-				tracker.FailedCommands = append(tracker.FailedCommands, command)
-				tracker.ErrorCount++
-				errorStr := fmt.Sprintf("%v", result["error"])
-				tracker.LastError = errorStr
-
-				// Check for repeated failures
-				if len(tracker.FailedCommands) > 1 &&
-					tracker.FailedCommands[len(tracker.FailedCommands)-1] ==
-						tracker.FailedCommands[len(tracker.FailedCommands)-2] {
-					tracker.ConsecutiveSameCommands++
-				}
-
-				// Analyze error for dependencies
-				if strings.Contains(errorStr, "No such file or directory") ||
-					strings.Contains(errorStr, "not found") {
-					if strings.Contains(errorStr, ".h") || strings.Contains(errorStr, "glfw") ||
-						strings.Contains(errorStr, "glad") || strings.Contains(errorStr, "opengl") {
-						depError := fmt.Sprintf("Dependency error: %s", errorStr)
-						tracker.DependencyErrors = append(tracker.DependencyErrors, depError)
-						tracker.RequiresFixing = true
-					}
-				}
-
-				fmt.Printf("❌ Command failed: %s\n", command)
-				fmt.Printf("Error: %s\n", errorStr)
-			}
-		}
-
-	case handler.EXIT_PROCESS:
-		tracker.TaskCompleted = true
-		tracker.CompletedSteps = append(tracker.CompletedSteps, "Task marked as complete")
-		result = map[string]any{"status": "task_completed", "message": "Task has been marked as complete"}
-
-	default:
-		if tool, exists := handler.GeminiTools()[function_name]; exists {
-			result = tool.Run(parameters)
-			if result["error"] != nil {
-				tracker.ErrorCount++
-				tracker.LastError = fmt.Sprintf("%s failed: %v", function_name, result["error"])
-			}
-		} else {
-			fmt.Printf("⚠️ Unknown function: %s\n", function_name)
-			result = map[string]any{"error": fmt.Sprintf("Unknown function: %s", function_name)}
-		}
-		tracker.CompletedSteps = append(tracker.CompletedSteps, fmt.Sprintf("Executed %s", function_name))
-	}
-
-	return result
-}
-
-func cleanAndValidateText(text string) string {
-	if text == "" {
-		return ""
-	}
-
-	cleanText := strings.TrimSpace(text)
-
-	if cleanText == "[]" || cleanText == "[map[]]" || cleanText == "[[]]" {
-		return ""
-	}
-
-	if strings.HasPrefix(cleanText, "[map[") && strings.HasSuffix(cleanText, "]]") {
-		extracted := extractContentFromMapString(cleanText)
-		if extracted == "[]" || strings.TrimSpace(extracted) == "[]" {
-			return ""
-		}
-		return extracted
-	}
-
-	cleanText = strings.ReplaceAll(cleanText, "```", "")
-	cleanText = strings.TrimSpace(cleanText)
-
-	if cleanText == "[]" || cleanText == "" {
-		return ""
-	}
-
-	return cleanText
-}
-
-func extractContentFromMapString(mapStr string) string {
-	textPattern := `text:([^]]+)`
-	re := regexp.MustCompile(textPattern)
-	matches := re.FindStringSubmatch(mapStr)
-
-	if len(matches) > 1 {
-		content := strings.TrimSpace(matches[1])
-		content = strings.ReplaceAll(content, "\\n", "\n")
-		content = strings.TrimSpace(content)
-		return content
-	}
-
-	return ""
-}
-
-// Reset conversation history when stuck
-func ResetConversationHistory(tracker *repository.TaskTracker, GoogleAI **handler.GoogleAI, originalTask string) {
-	tracker.ConversationResetCount++
-	tracker.EmptyResponseCount = 0
-	tracker.StuckCounter = 0
-
-	fmt.Printf("🔥 Resetting conversation history (reset #%d)\n", tracker.ConversationResetCount)
-
-	service.InitializeCache()
-	service.SetSystemInstruction(repository.Instructions)
-
-	freshPrompt := buildFreshPromptAfterReset(tracker, originalTask)
-	service.AddUserMessage(freshPrompt)
-
-	*GoogleAI = handler.NewGoogleAI(Cfg, freshPrompt)
-}
-
-func buildFreshPromptAfterReset(tracker *repository.TaskTracker, originalTask string) string {
-	var promptBuilder strings.Builder
-
-	promptBuilder.WriteString(fmt.Sprintf("TASK: %s\n\n", originalTask))
-	promptBuilder.WriteString("CURRENT PROGRESS:\n")
-
-	if tracker.ProjectStructureRetrieved {
-		promptBuilder.WriteString("✅ Project structure analyzed\n")
-	}
-
-	if len(tracker.FilesCreated) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("✅ Files created: %v\n", tracker.FilesCreated))
-	}
-
-	if len(tracker.FilesModified) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("✅ Files modified: %v\n", tracker.FilesModified))
-	}
-
-	if len(tracker.CommandsRun) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("✅ Commands executed: %v\n", tracker.CommandsRun))
-	}
-
-	if len(tracker.FailedCommands) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("❌ Failed commands: %v\n", tracker.FailedCommands))
-	}
-
-	promptBuilder.WriteString("\nNEXT ACTION NEEDED:\n")
-
-	if !tracker.ProjectStructureRetrieved {
-		promptBuilder.WriteString("1. Call get_project_structure with path=\".\"\n")
-	} else if len(tracker.FilesCreated) == 0 && len(tracker.FilesModified) == 0 {
-		promptBuilder.WriteString("1. Create or modify necessary files for the task\n")
-	} else if len(tracker.CommandsRun) == 0 {
-		promptBuilder.WriteString("1. Test the implementation using terminal_execute\n")
-	} else {
-		promptBuilder.WriteString("1. Verify the task is complete and call exit_process\n")
-	}
-
-	promptBuilder.WriteString("\n🚨 CRITICAL: You must make function calls to complete the task!")
-	promptBuilder.WriteString("\n❌ DO NOT respond with empty text or '[]'")
-	promptBuilder.WriteString("\n✅ Choose ONE specific function to call now!")
-
-	return promptBuilder.String()
-}
-
-// Enhanced loop detection with error analysis
-func isStuckInAdvancedLoop(tracker *repository.TaskTracker) bool {
-	if tracker.EmptyResponseCount > 5 {
-		return true
-	}
-
-	if tracker.ConsecutiveSameCommands > 2 {
-		return true
-	}
-
-	if tracker.ProjectStructureRetrieved && tracker.LastFunctionCall == handler.GET_PROJECT_STRUCTURE {
-		fmt.Println("🚨 Repeated get_project_structure call detected!")
-		return true
-	}
-
-	if len(tracker.DependencyErrors) > 2 {
-		return true
-	}
-
-	if tracker.ConsecutiveReadCalls > 3 {
-		return true
-	}
-
-	if len(tracker.FailedCommands) > 3 && tracker.ErrorCount > 5 {
-		return true
-	}
-
-	if tracker.CurrentPhase == "IMPLEMENTATION" && tracker.Iteration > 10 {
-		if len(tracker.CommandsRun) == 0 && len(tracker.FilesCreated) > 0 {
-			return true
-		}
-	}
-
-	return false
-}
-
-// Enhanced phase determination
-func determineEnhancedPhase(tracker *repository.TaskTracker, functionalActions int) string {
-	if !tracker.ProjectStructureRetrieved {
-		return "DISCOVERY"
-	}
-
-	if len(tracker.DependencyErrors) > 1 || tracker.RequiresFixing {
-		return "FORCED_DEPENDENCY_FIX"
-	}
-
-	if len(tracker.FailedCommands) > 2 && strings.Contains(strings.Join(tracker.FailedCommands, " "), "cmake") {
-		return "FORCED_BUILD_FIX"
-	}
-
-	if len(tracker.FilesCreated) > 0 && len(tracker.CommandsRun) == 0 && !tracker.BuildAttempted {
-		return "FORCED_BUILD"
-	}
-
-	if functionalActions == 0 {
-		if tracker.ProjectStructureRetrieved {
-			return "ANALYSIS"
-		}
-		return "DISCOVERY"
-	}
-	if len(tracker.CommandsRun) > 0 && !tracker.TaskCompleted {
-		return "ANALYSIS_AFTER_TEST"
-	}
-	if len(tracker.FilesCreated) > 0 || len(tracker.FilesModified) > 0 {
-		return "TESTING"
-	}
-	if len(tracker.CompletedSteps) > 0 {
-		return "IMPLEMENTATION"
-	}
-	return "COMPLETION"
-}
-
-// Enhanced contextual prompt with error analysis
-func buildEnhancedContextualPrompt(tracker *repository.TaskTracker, originalTask string) string {
-	var promptBuilder strings.Builder
-
-	promptBuilder.WriteString(fmt.Sprintf("ORIGINAL TASK: %s\n\n", originalTask))
-	promptBuilder.WriteString(fmt.Sprintf("CURRENT PHASE: %s\n", tracker.CurrentPhase))
-	promptBuilder.WriteString(fmt.Sprintf("ITERATION: %d\n", tracker.Iteration))
-	promptBuilder.WriteString(fmt.Sprintf("EXECUTION TIME: %v\n\n", time.Since(tracker.StartTime)))
-
-	if len(tracker.FailedCommands) > 0 {
-		promptBuilder.WriteString("🚨 FAILED COMMANDS HISTORY:\n")
-		for _, cmd := range tracker.FailedCommands {
-			promptBuilder.WriteString(fmt.Sprintf("❌ %s\n", cmd))
-		}
-		promptBuilder.WriteString("\n")
-	}
-
-	if len(tracker.DependencyErrors) > 0 {
-		promptBuilder.WriteString("🔗 DEPENDENCY ERRORS DETECTED:\n")
-		for _, err := range tracker.DependencyErrors {
-			promptBuilder.WriteString(fmt.Sprintf("⚠️ %s\n", err))
-		}
-		promptBuilder.WriteString("🔌 YOU MUST FIX THE BUILD SYSTEM (CMakeLists.txt, package.json, etc.) TO RESOLVE THESE!\n\n")
-	}
-
-	if tracker.LastError != "" {
-		promptBuilder.WriteString(fmt.Sprintf("🐛 LAST ERROR: %s\n\n", tracker.LastError))
-	}
-
-	if tracker.EmptyResponseCount > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("🚨 WARNING: %d empty responses detected!\n", tracker.EmptyResponseCount))
-		promptBuilder.WriteString("❌ DO NOT respond with empty text or '[]'\n")
-		promptBuilder.WriteString("✅ You MUST make a function call!\n\n")
-	}
-
-	// Phase-specific instructions
-	switch tracker.CurrentPhase {
-	case "FORCED_DEPENDENCY_FIX":
-		promptBuilder.WriteString("🔧 FORCED DEPENDENCY FIX PHASE:\n")
-		promptBuilder.WriteString("You MUST fix the build configuration file (CMakeLists.txt, package.json, etc.)\n")
-		promptBuilder.WriteString("For C++ projects with missing dependencies:\n")
-		promptBuilder.WriteString("- Update build files to use proper dependency management\n")
-		promptBuilder.WriteString("DO NOT just fix include paths - fix the build system!\n\n")
-
-	case "FORCED_BUILD_FIX":
-		promptBuilder.WriteString("🔨 FORCED BUILD FIX PHASE:\n")
-		promptBuilder.WriteString("The build keeps failing. You MUST:\n")
-		promptBuilder.WriteString("1. Analyze WHY the build fails\n")
-		promptBuilder.WriteString("2. Fix the root cause in build files\n")
-		promptBuilder.WriteString("3. Do NOT repeat the same failing command!\n\n")
-
-	case "FORCED_BUILD":
-		promptBuilder.WriteString("🔧 FORCED BUILD PHASE:\n")
-		promptBuilder.WriteString("You MUST execute a build/test command now!\n")
-		promptBuilder.WriteString("Use terminal_execute with appropriate commands\n")
-		promptBuilder.WriteString("DO NOT read files again - execute commands immediately!\n\n")
-	}
-
-	if tracker.ConsecutiveReadCalls > 2 {
-		promptBuilder.WriteString("🚨 WARNING: Stop reading files! Take ACTION now!\n")
-		promptBuilder.WriteString("You must use write_file, create_file, or terminal_execute.\n\n")
-	}
-
-	if tracker.ConsecutiveSameCommands > 1 {
-		promptBuilder.WriteString("🔥 WARNING: You're repeating the same failed command!\n")
-		promptBuilder.WriteString("Analyze the error and fix the underlying issue first!\n\n")
-	}
-
-	// Progress summary
-	if len(tracker.CompletedSteps) > 0 {
-		promptBuilder.WriteString("COMPLETED STEPS (last 5):\n")
-		start := len(tracker.CompletedSteps) - 5
-		if start < 0 {
-			start = 0
-		}
-		for i := start; i < len(tracker.CompletedSteps); i++ {
-			promptBuilder.WriteString(fmt.Sprintf("✅ %s\n", tracker.CompletedSteps[i]))
-		}
-		promptBuilder.WriteString("\n")
-	}
-
-	if len(tracker.FilesCreated) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("FILES CREATED: %v\n", tracker.FilesCreated))
-	}
-	if len(tracker.FilesModified) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("FILES MODIFIED: %v\n", tracker.FilesModified))
-	}
-	if len(tracker.CommandsRun) > 0 {
-		promptBuilder.WriteString(fmt.Sprintf("SUCCESSFUL COMMANDS: %v\n", tracker.CommandsRun))
-	}
-
-	promptBuilder.WriteString("\n🎯 CRITICAL: Choose ONE specific function call to make progress.")
-	promptBuilder.WriteString("\n🚫 DO NOT repeat failed actions without fixing the root cause first!")
-
-	return promptBuilder.String()
-}
-
-// Enhanced task completion evaluation
-
-// Enhanced REQUEST_AI_TOOL handler
-func handleRequestAIToolEnhanced(parameters map[string]any, tracker *repository.TaskTracker, GoogleAI *handler.GoogleAI) {
-	queryInterface, exists := parameters["query"]
-	if !exists {
+func handleUserQuery(cmd *cobra.Command, args []string) {
+	if len(args) == 0 {
+		fmt.Println("No query provided. Please provide a task or question.")
 		return
 	}
 
-	query, ok := queryInterface.(string)
-	if !ok || query == "" {
-		query = "Continue with the task based on current context"
+	query := strings.Join(args, " ")
+
+	if err := orchestrator.InitializeEnhancedOrchestrator(); err != nil {
+		fmt.Printf("Failed to initialize orchestrator: %v\n", err)
+		return
 	}
 
-	contextualQuery := fmt.Sprintf(
-		"ORIGINAL TASK: %s\n"+
-			"CURRENT PROGRESS: %s\n"+
-			"ITERATION: %d\n"+
-			"EXECUTION TIME: %v\n"+
-			"ERRORS ENCOUNTERED: %d\n"+
-			"FAILED COMMANDS: %v\n"+
-			"DEPENDENCY ISSUES: %v\n"+
-			"LAST ERROR: %s\n"+
-			"EMPTY RESPONSES: %d\n"+
-			"WARNING: You must take concrete action with function calls.\n"+
-			"🚨 DO NOT respond with empty text or '[]' - make a function call!\n"+
-			"QUERY: %s\n",
-		tracker.OriginalTask,
-		generateEnhancedProgressSummary(tracker),
-		tracker.Iteration,
-		time.Since(tracker.StartTime),
-		tracker.ErrorCount,
-		tracker.FailedCommands,
-		tracker.DependencyErrors,
-		tracker.LastError,
-		tracker.EmptyResponseCount,
-		query)
+	result := orchestrator.ProcessUserQuery(query)
 
-	fmt.Printf("🔥 AI requesting continuation with enhanced error context\n")
-
-	service.AddUserMessage(contextualQuery)
-	GoogleAI.Reset(contextualQuery)
+	handleOrchestratorResponse(result)
 }
 
-// Enhanced progress summary
-func generateEnhancedProgressSummary(tracker *repository.TaskTracker) string {
-	summary := fmt.Sprintf("Phase: %s, ", tracker.CurrentPhase)
-	summary += fmt.Sprintf("Files created: %d, ", len(tracker.FilesCreated))
-	summary += fmt.Sprintf("Files modified: %d, ", len(tracker.FilesModified))
-	summary += fmt.Sprintf("Successful commands: %d, ", len(tracker.CommandsRun))
-	summary += fmt.Sprintf("Failed commands: %d, ", len(tracker.FailedCommands))
-	summary += fmt.Sprintf("Errors: %d, ", tracker.ErrorCount)
-	summary += fmt.Sprintf("Empty responses: %d", tracker.EmptyResponseCount)
-	return summary
+func handleOrchestratorResponse(result map[string]any) {
+	if result["error"] != nil {
+		fmt.Printf("Error: %v\n", result["error"])
+		return
+	}
+
+	service.PutJSONCache(result)
+
+	status, _ := result["status"].(string)
+	fmt.Printf("Status: %s\n", status)
+
+	switch status {
+	case "execution_completed":
+		handleExecutionCompleted(result)
+	case "parallel_execution_completed":
+		handleParallelExecution(result)
+	case "completed":
+		handleSimpleCompletion(result)
+	case "subdivided":
+		handleSubdivision(result)
+	default:
+		handleGenericResponse(result)
+	}
+
+	processFunctionCalls(result)
 }
 
-// initConfig initializes the configuration
-func initConfig() {
-	if cfgFile != "" {
+func handleExecutionCompleted(result map[string]any) {
+	fmt.Println("\n🎯 Task Execution Completed")
+
+	if executionID, ok := result["execution_id"].(string); ok {
+		fmt.Printf("Execution ID: %s\n", executionID)
+	}
+
+	if results, ok := result["results"].([]map[string]any); ok {
+		fmt.Printf("Subtasks completed: %d\n", len(results))
+
+		for i, subResult := range results {
+			fmt.Printf("\nSubtask %d:\n", i+1)
+			if subResult["error"] == nil {
+				fmt.Printf("  ✓ Success")
+				if output := subResult["output"]; output != nil {
+					fmt.Printf(" - Output: %v\n", formatOutput(output))
+				}
+			} else {
+				fmt.Printf("  ✗ Failed: %v\n", subResult["error"])
+			}
+		}
+	}
+
+	if workflow, ok := result["workflow"].(*orchestrator.WorkflowState); ok {
+		fmt.Printf("\nWorkflow: %s (Status: %s)\n", workflow.ID, workflow.Status)
+	}
+}
+
+func handleParallelExecution(result map[string]any) {
+	fmt.Println("\n⚡ Parallel Task Execution Completed")
+
+	if executionID, ok := result["execution_id"].(string); ok {
+		fmt.Printf("Execution ID: %s\n", executionID)
+	}
+
+	if finalResult, ok := result["final_result"].(map[string]any); ok {
+		successCount := finalResult["success_count"].(int)
+		totalCount := finalResult["total_count"].(int)
+
+		fmt.Printf("Success Rate: %d/%d tasks completed successfully\n", successCount, totalCount)
+
+		if outputs, ok := finalResult["outputs"].([]any); ok && len(outputs) > 0 {
+			fmt.Println("\nCombined Results:")
+			for i, output := range outputs {
+				fmt.Printf("  Result %d: %v\n", i+1, formatOutput(output))
+			}
+		}
+
+		if errors, ok := finalResult["errors"].([]any); ok && len(errors) > 0 {
+			fmt.Println("\nErrors encountered:")
+			for i, err := range errors {
+				fmt.Printf("  Error %d: %v\n", i+1, err)
+			}
+		}
+	}
+}
+
+func handleSimpleCompletion(result map[string]any) {
+	fmt.Println("\n✓ Task Completed")
+
+	if agentID, ok := result["agent_id"].(string); ok {
+		fmt.Printf("Executed by agent: %s\n", agentID)
+	}
+
+	if output := result["output"]; output != nil {
+		fmt.Printf("Result: %v\n", formatOutput(output))
+	}
+
+	if cacheHit, ok := result["cache_hit"].(bool); ok && cacheHit {
+		fmt.Println("(Result retrieved from cache)")
+	}
+}
+
+func handleSubdivision(result map[string]any) {
+	if subdivisionResult, ok := result["sub_tasks"].([]orchestrator.SubTask); ok {
+		fmt.Printf("Task subdivided into %d subtasks.\n", len(subdivisionResult))
+		fmt.Println("Starting execution of subtasks...")
+		orchestrator.ExecuteTaskWithSubdivision(map[string]any{
+			"task":               result["original_task"],
+			"subdivision_result": result,
+		})
+	}
+}
+
+func handleGenericResponse(result map[string]any) {
+	if output := result["output"]; output != nil {
+		fmt.Printf("Output: %v\n", formatOutput(output))
+	}
+
+	if context := result["context"]; context != nil {
+		fmt.Printf("Context used: %v\n", context)
+	}
+
+	if cacheInfo := result["cached_response_id"]; cacheInfo != nil {
+		fmt.Printf("Response cached as: %v\n", cacheInfo)
+	}
+}
+
+func processFunctionCalls(result map[string]any) {
+	if outputs, ok := result["output"].([]map[string]any); ok {
+		availableFunctions := getAvailableAgentFunctions()
+
+		for _, output := range outputs {
+			if funcName, hasFunc := output["function_name"].(string); hasFunc {
+				if params, hasParams := output["parameters"].(map[string]any); hasParams {
+					fmt.Printf("\n🔧 Executing function: %s\n", funcName)
+
+					if fn, exists := availableFunctions[funcName]; exists {
+						functionResult := fn.Service(params)
+
+						if functionResult["error"] == nil {
+							fmt.Printf("✓ Function executed successfully\n")
+							if status := functionResult["status"]; status != nil {
+								fmt.Printf("Status: %v\n", status)
+							}
+							service.PutJSONCache(functionResult)
+							displayFunctionResult(funcName, functionResult)
+						} else {
+							fmt.Printf("✗ Function failed: %v\n", functionResult["error"])
+						}
+					} else {
+						fmt.Printf("✗ Unknown function: %s\n", funcName)
+					}
+				}
+			}
+		}
+	}
+}
+
+// getAvailableAgentFunctions collects all function declarations from all registered live agents.
+func getAvailableAgentFunctions() map[string]repository.Function {
+	allFunctions := make(map[string]repository.Function)
+	orchestratorFunctions := orchestrator.GetEnhancedOrchestratorCapabilitiesMap()
+	for name, fn := range orchestratorFunctions {
+		allFunctions[name] = fn
+	}
+
+	for range orchestrator.RegisteredLiveAgents {
+
+		for name, fn := range planner.GetPlannerCapabilitiesMap() {
+			allFunctions[name] = fn
+		}
+
+		for name, fn := range coder.GetCoderCapabilitiesMap() {
+			allFunctions[name] = fn
+		}
+
+	}
+	return allFunctions
+}
+
+func displayFunctionResult(funcName string, result map[string]any) {
+	switch funcName {
+	case "register_agents_enhanced":
+		if agents, ok := result["registered_agents"].([]string); ok {
+			fmt.Printf("Registered agents (%d):\n", len(agents))
+			for _, agentID := range agents {
+				fmt.Printf("  - %s\n", agentID)
+			}
+		}
+
+	case "subdivide_task":
+		if subTasks, ok := result["sub_tasks"].([]orchestrator.SubTask); ok {
+			fmt.Printf("Task subdivided into %d subtasks:\n", len(subTasks))
+			for i, subTask := range subTasks {
+				fmt.Printf("  %d. %s (Type: %s, Agent: %s)\n",
+					i+1, subTask.Description, subTask.Type, subTask.AgentType)
+			}
+		}
+
+	case "execute_task_with_subdivision":
+		handleTaskExecutionResult(result)
+
+	case "get_cache_statistics":
+		displayCacheStatistics(result)
+
+	case "get_task_execution_status":
+		displayExecutionStatus(result)
+
+	case "parallel_execute_tasks":
+		handleParallelExecutionResult(result)
+
+	case "create_workflow":
+		handleWorkflowCreation(result)
+
+	case "execute_workflow":
+		handleWorkflowExecution(result)
+
+	case "decompose_task":
+		displayPlannerBreakdown(result)
+
+	default:
+		if status := result["status"]; status != nil {
+			fmt.Printf("Result: %v\n", status)
+		}
+		if message := result["message"]; message != nil {
+			fmt.Printf("Message: %v\n", message)
+		}
+	}
+}
+
+func displayPlannerBreakdown(result map[string]any) {
+	fmt.Println("\n📋 Planner's Breakdown:")
+	if breakdownID, ok := result["breakdown_id"].(string); ok {
+		fmt.Printf("Breakdown ID: %s\n", breakdownID)
+	}
+	if strategy, ok := result["strategy"].(string); ok {
+		fmt.Printf("Strategy: %s\n", strategy)
+	}
+	if complexity, ok := result["complexity"].(string); ok {
+		fmt.Printf("Complexity: %s\n", complexity)
+	}
+	fmt.Println("\nSubtasks:")
+	if subtasks, ok := result["subtasks"].([]planner.SubTask); ok {
+		for _, subtask := range subtasks {
+			fmt.Printf("  - [ID: %s] %s\n", subtask.ID, subtask.Description)
+			fmt.Printf("    Agent: %s, Status: %s\n", subtask.RequiredAgent, subtask.Status)
+			if len(subtask.Dependencies) > 0 {
+				fmt.Printf("    Dependencies: %v\n", subtask.Dependencies)
+			}
+			fmt.Println()
+		}
+	}
+}
+
+func handleTaskExecutionResult(result map[string]any) {
+	if executionID, ok := result["execution_id"].(string); ok {
+		fmt.Printf("Task execution started: %s\n", executionID)
+	}
+
+	if subTasks, ok := result["sub_tasks"].([]orchestrator.SubTask); ok {
+		fmt.Printf("Subdivided into %d subtasks\n", len(subTasks))
+	}
+
+	if executionResults, ok := result["execution_results"].([]map[string]any); ok {
+		fmt.Printf("Execution results: %d completed\n", len(executionResults))
+
+		successCount := 0
+		for _, execResult := range executionResults {
+			if execResult["error"] == nil {
+				successCount++
+			}
+		}
+		fmt.Printf("Success rate: %d/%d\n", successCount, len(executionResults))
+	}
+}
+
+func handleParallelExecutionResult(result map[string]any) {
+	fmt.Println("\n🚀 Parallel Execution Started")
+
+	if executionID, ok := result["execution_id"].(string); ok {
+		fmt.Printf("Execution ID: %s\n", executionID)
+	}
+
+	if taskCount, ok := result["task_count"].(int); ok {
+		fmt.Printf("Tasks queued for parallel execution: %d\n", taskCount)
+	}
+
+	if message, ok := result["message"].(string); ok {
+		fmt.Printf("Status: %s\n", message)
+	}
+}
+
+func handleWorkflowCreation(result map[string]any) {
+	fmt.Println("\n📋 Workflow Created")
+
+	if workflowID, ok := result["workflow_id"].(string); ok {
+		fmt.Printf("Workflow ID: %s\n", workflowID)
+	}
+
+	if stepCount, ok := result["step_count"].(int); ok {
+		fmt.Printf("Workflow steps: %d\n", stepCount)
+	}
+
+	if status, ok := result["status"].(string); ok {
+		fmt.Printf("Status: %s\n", status)
+	}
+}
+
+func handleWorkflowExecution(result map[string]any) {
+	fmt.Println("\n⚙️ Workflow Execution")
+
+	if workflowID, ok := result["workflow_id"].(string); ok {
+		fmt.Printf("Workflow ID: %s\n", workflowID)
+	}
+
+	if executionID, ok := result["execution_id"].(string); ok {
+		fmt.Printf("Execution ID: %s\n", executionID)
+	}
+
+	if progress, ok := result["progress"].(map[string]any); ok {
+		if completed, ok := progress["completed"].(int); ok {
+			if total, ok := progress["total"].(int); ok {
+				fmt.Printf("Progress: %d/%d steps\n", completed, total)
+			}
+		}
+	}
+}
+
+func displayCacheStatistics(stats map[string]any) {
+	fmt.Println("\n📊 Cache Statistics:")
+
+	if totalResponses, ok := stats["total_responses"].(int); ok {
+		fmt.Printf("Total cached responses: %d\n", totalResponses)
+	}
+
+	if sizeMB, ok := stats["total_size_mb"].(float64); ok {
+		fmt.Printf("Cache size: %.2f MB\n", sizeMB)
+	}
+
+	if successRate, ok := stats["success_rate"].(float64); ok {
+		fmt.Printf("Success rate: %.1f%%\n", successRate*100)
+	}
+
+	if agentDist, ok := stats["agent_distribution"].(map[string]int); ok {
+		fmt.Println("Agent distribution:")
+		for agentID, count := range agentDist {
+			fmt.Printf("  %s: %d responses\n", agentID, count)
+		}
+	}
+
+	if config, ok := stats["config"].(map[string]any); ok {
+		fmt.Println("Cache configuration:")
+		if maxResponses, ok := config["max_responses"].(int); ok {
+			fmt.Printf("  Max responses: %d\n", maxResponses)
+		}
+		if maxAge, ok := config["max_age"].(string); ok {
+			fmt.Printf("  Max age: %s\n", maxAge)
+		}
+	}
+}
+
+func displayExecutionStatus(status map[string]any) {
+	fmt.Println("\n📋 Execution Status:")
+
+	if executionID, ok := status["execution_id"].(string); ok {
+		fmt.Printf("Execution ID: %s\n", executionID)
+	}
+
+	if progress, ok := status["progress"].(float64); ok {
+		fmt.Printf("Progress: %.1f%%\n", progress*100)
+	}
+
+	if completed, ok := status["completed"].(int); ok {
+		if total, ok := status["total_tasks"].(int); ok {
+			fmt.Printf("Completed: %d/%d tasks\n", completed, total)
+		}
+	}
+
+	if failed, ok := status["failed"].(int); ok && failed > 0 {
+		fmt.Printf("Failed tasks: %d\n", failed)
+	}
+
+	if pending, ok := status["pending"].(int); ok && pending > 0 {
+		fmt.Printf("Pending tasks: %d\n", pending)
+	}
+
+	if errors, ok := status["errors"].([]any); ok && len(errors) > 0 {
+		fmt.Println("Recent errors:")
+		maxErrors := len(errors)
+		if maxErrors > 3 {
+			maxErrors = 3
+		}
+		for i := 0; i < maxErrors; i++ {
+			fmt.Printf("  - %v\n", errors[i])
+		}
+		if len(errors) > 3 {
+			fmt.Printf("  ... and %d more errors\n", len(errors)-3)
+		}
+	}
+
+	if startTime, ok := status["start_time"].(string); ok {
+		fmt.Printf("Started: %s\n", startTime)
+	}
+
+	if estimatedCompletion, ok := status["estimated_completion"].(string); ok {
+		fmt.Printf("Estimated completion: %s\n", estimatedCompletion)
+	}
+}
+
+func formatOutput(output any) string {
+	switch v := output.(type) {
+	case string:
+		if len(v) > 500 {
+			return v[:500] + "...[truncated]"
+		}
+		return v
+
+	case []map[string]any:
+		if len(v) == 0 {
+			return "[]"
+		}
+
+		if len(v) == 1 {
+			if text, exists := v[0]["text"].(string); exists {
+				if len(text) > 500 {
+					return text[:500] + "...[truncated]"
+				}
+				return text
+			}
+		}
+
+		return fmt.Sprintf("[%d items]", len(v))
+
+	case map[string]any:
+		if len(v) == 0 {
+			return "{}"
+		}
+
+		if text, exists := v["text"].(string); exists {
+			if len(text) > 500 {
+				return text[:500] + "...[truncated]"
+			}
+			return text
+		}
+
+		if content, exists := v["content"].(string); exists {
+			if len(content) > 500 {
+				return content[:500] + "...[truncated]"
+			}
+			return content
+		}
+
+		if status, exists := v["status"].(string); exists {
+			if message, exists := v["message"].(string); exists {
+				return fmt.Sprintf("Status: %s - %s", status, message)
+			}
+			return fmt.Sprintf("Status: %s", status)
+		}
+
+		if message, exists := v["message"].(string); exists {
+			if len(message) > 500 {
+				return message[:500] + "...[truncated]"
+			}
+			return message
+		}
+
+		return fmt.Sprintf("{%d fields}", len(v))
+
+	case []any:
+		if len(v) == 0 {
+			return "[]"
+		}
+
+		if len(v) > 0 {
+			if str, ok := v[0].(string); ok {
+				if len(v) == 1 {
+					if len(str) > 500 {
+						return str[:500] + "...[truncated]"
+					}
+					return str
+				}
+				return fmt.Sprintf("[%d strings]", len(v))
+			}
+		}
+
+		return fmt.Sprintf("[%d items]", len(v))
+
+	default:
+		str := fmt.Sprintf("%v", v)
+		if len(str) > 500 {
+			return str[:500] + "...[truncated]"
+		}
+		return str
+	}
+}
+
+func InitConfig() {
+	switch environment {
+	case "dev":
+		cfgFile = "C:\\Users\\Achiket\\Documents\\go\\dost\\configs\\.dost.yaml"
 		viper.SetConfigFile(cfgFile)
-	} else {
+
+	case "prod":
 		home, err := os.UserHomeDir()
 		cobra.CheckErr(err)
+
 		viper.AddConfigPath(home)
-		viper.SetConfigType("yaml")
 		viper.SetConfigName(".dost")
+		viper.SetConfigType("yaml")
 	}
 
 	viper.AutomaticEnv()
@@ -967,97 +592,24 @@ func initConfig() {
 		os.Exit(1)
 	}
 
-	var err error
-	Cfg, err = config.Load()
+	cfg, err := config.Load()
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
 	}
+	Cfg = cfg
 
-	getWorkingDir, err := os.Getwd()
-	if err != nil {
-		fmt.Printf("Error Setting up DOST: %v\n", err)
-		os.Exit(1)
+	service.InitializeCache()
+
+	if err := orchestrator.InitializeOrchestratorContext(); err != nil {
+		fmt.Printf("Warning: Failed to initialize orchestrator context: %v\n", err)
 	}
 
-	// Initialize JSON cache system
-	path := fmt.Sprintf("%s\\.dost\\cache.json", getWorkingDir)
-	os.Mkdir(fmt.Sprintf("%s\\.dost", getWorkingDir), 0755)
-
-	// Create the cache.json file if it doesn't exist
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		file, err := os.Create(path)
-		if err != nil {
-			fmt.Printf("Error Setting up Dost cache: %v\n", err)
-			os.Exit(1)
-		}
-		file.Close()
-	}
-}
-
-// getArgsWithConversationHistory builds arguments with conversation history for the AI API
-func getArgsWithConversationHistory() map[string]any {
-	var systemInstruction map[string]any
-	var contents []map[string]any
-
-	// Get conversation history from cache
-	conversationHistory := service.GetConversationHistory()
-
-	// Handle system instruction separately from contents
-	if initialInstruction, ok := conversationHistory["systemInstruction"].(map[string]any); ok {
-		systemInstruction = initialInstruction
+	if err := orchestrator.InitializeResponseCache(nil); err != nil {
+		fmt.Printf("Warning: Failed to initialize response cache: %v\n", err)
 	}
 
-	// Handle conversation contents, ensuring correct roles and parts structure
-	if historyContents, ok := conversationHistory["contents"].([]service.ConversationContent); ok {
-		for _, convContent := range historyContents {
-			// Convert each ConversationContent struct to the map format expected by the API
-			contentMap := map[string]any{
-				"role":  convContent.Role,
-				"parts": []map[string]any{},
-			}
+	orchestrator.StartCacheMaintenanceScheduler()
 
-			for _, part := range convContent.Parts {
-				// Append a text part to the parts slice
-				if part.Text != "" {
-					contentMap["parts"] = append(contentMap["parts"].([]map[string]any), map[string]any{"text": part.Text})
-				}
-				// Append a functionCall part if it exists
-				if part.FunctionCall != nil {
-					contentMap["parts"] = append(contentMap["parts"].([]map[string]any), map[string]any{"functionCall": part.FunctionCall})
-				}
-				// Append a functionResponse part if it exists
-				if part.FunctionResponse != nil {
-					contentMap["parts"] = append(contentMap["parts"].([]map[string]any), map[string]any{"functionResponse": part.FunctionResponse})
-				}
-			}
-			contents = append(contents, contentMap)
-		}
-	}
-
-	// Add initial context if it's the first run
-	if INITIAL_CONTEXT == 1 {
-		INITIAL_CONTEXT = 0
-		initialCtx := service.InitialContext(map[string]any{})
-		initialCtxBytes, _ := json.Marshal(initialCtx)
-
-		// This should be part of the systemInstruction, not contents
-		systemInstruction = map[string]any{
-			"parts": []map[string]any{
-				{"text": fmt.Sprintf("Initial context:\n%s", string(initialCtxBytes))},
-				{"text": repository.Instructions},
-			},
-		}
-	}
-	// Build the final request structure
-	request := map[string]any{
-		"systemInstruction": systemInstruction,
-		"contents":          contents,
-		"tools": []map[string]any{
-			{"function_declarations": handler.GetTerminalToolsMap()},
-		},
-		"API_KEY": Cfg.AI.API_KEY,
-	}
-
-	return request
+	fmt.Println("DOST initialized successfully")
 }

@@ -1,11 +1,28 @@
 package repository
 
+const (
+	// TypeUnspecified means not specified, should not be used.
+	TypeUnspecified = "0"
+	// TypeString means openAPI string type
+	TypeString = "1"
+	// TypeNumber means openAPI number type
+	TypeNumber = "2"
+	// TypeInteger means openAPI integer type
+	TypeInteger = "3"
+	// TypeBoolean means openAPI boolean type
+	TypeBoolean = "4"
+	// TypeArray means openAPI array type
+	TypeArray = "5"
+	// TypeObject means openAPI object type
+	TypeObject = "6"
+)
+
 type Response struct {
 	Candidates []struct {
 		Content struct {
 			Parts []struct {
 				Text         string `json:"text"`
-				FunctionCall struct {
+				FunctionCall *struct {
 					Name string `json:"name"`
 					Args map[string]any
 				} `json:"functionCall"`
@@ -20,10 +37,13 @@ type ToolFunction interface {
 }
 type Return map[string]any
 type Properties struct {
-	Type        string      `json:"type"`
-	Items       *Properties `json:"items"`
-	Format      string      `json:"format"`
-	Description string      `json:"description"`
+	Type        string                 `json:"type"`
+	Items       *Properties            `json:"items"`
+	Format      string                 `json:"format"`
+	Enum        []string               `json:"enum"`
+	Properties  map[string]*Properties `json:"properties"`
+	Required    []string               `json:"required"`
+	Description string                 `json:"description"`
 }
 
 func (p *Properties) ToObject() map[string]any {
@@ -32,14 +52,15 @@ func (p *Properties) ToObject() map[string]any {
 		"items":       p.Items,
 		"format":      p.Format,
 		"description": p.Description,
+		"enum":        p.Enum,
 	}
 }
 
 type Parameters struct {
-	Type       string                `json:"type"`
-	Properties map[string]Properties `json:"properties"`
-	Required   []string              `json:"required"`
-	Optional   []string              `json:"optional"`
+	Type       string                 `json:"type"`
+	Properties map[string]*Properties `json:"properties"`
+	Required   []string               `json:"required"`
+	Optional   []string               `json:"optional"`
 }
 
 func (p *Parameters) ToObject() map[string]any {

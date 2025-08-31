@@ -6,17 +6,49 @@ app:
 logger:
   level: "info"
   format: "json"
+
+ORCHESTRATOR:
+  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  ORGANIZATION: "google"
+  MODEL: "gemini-2.5-flash"
+
+CODER:
+  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  ORGANIZATION: "google"
+  MODEL: "gemini-2.5-flash"
+
+CRITIC:
+  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  ORGANIZATION: "google"
+  MODEL: "gemini-2.5-flash"
+
+EXECUTOR:
+  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  ORGANIZATION: "google"
+  MODEL: "gemini-2.5-flash"
+
+PLANNER:
+  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  ORGANIZATION: "google"
+  MODEL: "gemini-2.5-flash"
+
+KNOWLEDGE:
+  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  ORGANIZATION: "google"
+  MODEL: "gemini-2.5-flash"
+
 #Add The model informations here
+# orchestrator
 ai:
-  API_KEY: "API_KEY"
+  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
   ORGANIZATION: "google"
   MODEL: "gemini-2.0-flash"
 ROOT:
-  API_KEY: "API_KEY"
+  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
   ORGANIZATION: "google"
   MODEL: "gemini-2.5-flash"
 
 assistant:
-  API_KEY: "API_KEY"
+  API_KEY: "sk-a6a5839bfdb44f6d9b5191892a267d48"
   ORGANIZATION: "deepseek"
   MODEL: "deepseek-chat"

@@ -17,6 +17,7 @@
 # Build directory
 bin/
 dist/
+dost/
 
 # IDE files
 .vscode/
@@ -55,3 +56,5 @@ coverage.html
 # Temporary files
 tmp/
 temp/
+
+./configs/.dost.yaml

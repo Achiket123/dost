@@ -6,6 +6,7 @@ import (
 	"context"
 	"dost/internal/config"
 	"dost/internal/repository"
+
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,9 +42,8 @@ type GoogleAI struct {
 
 func NewGoogleAI(config *config.Config, Query string) *GoogleAI {
 	return &GoogleAI{
-		Instructions: repository.Instructions,
-		Query:        Query,
-		Config:       config,
+		Query:  Query,
+		Config: config,
 	}
 }
 
@@ -54,9 +54,7 @@ func (g *GoogleAI) Reset(Query string) {
 
 func (g *GoogleAI) ToObject() map[string]any {
 	return map[string]any{
-		// "instructions": g.Instructions,
 		"query": g.Query,
-		// "response": g.Response.Text,
 	}
 }
 func (g *GoogleAI) Request() (*GoogleAI, error) {
@@ -249,7 +247,6 @@ func ShouldAddToCache(cachePath string, newData map[string]any) bool {
 
 // Enhanced stuck state handling - returns false if can't recover
 func HandleAdvancedStuckState(tracker *repository.TaskTracker, GoogleAI **GoogleAI) bool {
-	tracker.StuckCounter++
 
 	if len(tracker.DependencyErrors) > 1 {
 		fmt.Printf("🔧 Forcing dependency fix phase\n")
@@ -269,12 +266,6 @@ func HandleAdvancedStuckState(tracker *repository.TaskTracker, GoogleAI **Google
 		fmt.Printf("🚫 Breaking project structure loop\n")
 		tracker.CurrentPhase = "FORCED_IMPLEMENTATION"
 		return true
-	}
-
-	// If we've tried multiple recovery attempts, suggest termination
-	if tracker.StuckCounter > 5 {
-		fmt.Printf("🛑 Multiple recovery attempts failed\n")
-		return false
 	}
 
 	// Reset some counters to give it another chance

@@ -41,7 +41,7 @@ var tools []repository.Function = []repository.Function{
 `,
 		Parameters: repository.Parameters{
 			Type: TypeObject,
-			Properties: map[string]repository.Properties{
+			Properties: map[string]*repository.Properties{
 				"command": {
 					Type:        TypeString,
 					Description: "Command to execute (e.g., go run main.go, npm install, python main.py)",
@@ -67,7 +67,7 @@ Call this before working on unfamiliar projects to understand where files are lo
 Respects .gitignore to skip irrelevant files.`,
 		Parameters: repository.Parameters{
 			Type: TypeObject,
-			Properties: map[string]repository.Properties{
+			Properties: map[string]*repository.Properties{
 				"path": {
 					Type:        TypeString,
 					Description: "Path to the project directory (usually '.')",
@@ -92,7 +92,7 @@ If the files might already exist, first call 'read_files' to check.
 `,
 		Parameters: repository.Parameters{
 			Type: TypeObject,
-			Properties: map[string]repository.Properties{
+			Properties: map[string]*repository.Properties{
 				"file_names": {
 					Type:        TypeArray,
 					Items:       &repository.Properties{Type: TypeString},
@@ -116,7 +116,7 @@ If the files might already exist, first call 'read_files' to check.
 	Always call 'read_files' first to retrieve existing content before making modifications.`,
 		Parameters: repository.Parameters{
 			Type: TypeObject,
-			Properties: map[string]repository.Properties{
+			Properties: map[string]*repository.Properties{
 				"file_names": {
 					Type:        TypeArray,
 					Items:       &repository.Properties{Type: TypeString},
@@ -154,7 +154,7 @@ Call this whenever you need to:
 `,
 		Parameters: repository.Parameters{
 			Type: TypeObject,
-			Properties: map[string]repository.Properties{
+			Properties: map[string]*repository.Properties{
 				"file_names": {
 					Type: TypeArray,
 					Items: &repository.Properties{
@@ -202,7 +202,7 @@ Use this when:
 NEVER set index to -1 when using this tool.`,
 		Parameters: repository.Parameters{
 			Type: TypeObject,
-			Properties: map[string]repository.Properties{
+			Properties: map[string]*repository.Properties{
 				"query": {
 					Type:        TypeString,
 					Description: "Follow-up query or instruction to process with the new context",
@@ -223,7 +223,7 @@ NEVER set index to -1 when using this tool.`,
 		`,
 		Parameters: repository.Parameters{
 			Type:       TypeObject,
-			Properties: map[string]repository.Properties{},
+			Properties: map[string]*repository.Properties{},
 			Required:   []string{},
 		},
 
@@ -240,7 +240,7 @@ NEVER set index to -1 when using this tool.`,
 
 		Parameters: repository.Parameters{
 			Type: TypeObject,
-			Properties: map[string]repository.Properties{
+			Properties: map[string]*repository.Properties{
 				"command": {
 					Type:        TypeString,
 					Description: "Command to execute (e.g., go run main.go, npm install, python main.py)",
