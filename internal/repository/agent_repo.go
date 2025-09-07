@@ -10,10 +10,8 @@ type AgentType string
 const (
 	AgentPlanner      AgentType = "planner"
 	AgentCoder        AgentType = "coder"
-	AgentCritic       AgentType = "critic"
-	AgentExecutor     AgentType = "executor"
-	AgentKnowledge    AgentType = "knowledge"
 	AgentOrchestrator AgentType = "orchestrator"
+	AgentAnalysis     AgentType = "analysis"
 )
 
 // MessageRole represents the role in conversation

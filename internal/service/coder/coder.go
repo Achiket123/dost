@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,18 +29,62 @@ const coderName = "coder"
 const coderVersion = "0.1.0"
 
 // CoderInstructions provides the system instructions for the coder agent's LLM.
-const CoderInstructions = `You are a highly skilled and resourceful coder agent. Your primary function is to write, debug, and refactor code, as well as to analyze technical specifications and produce high-quality, executable code. You are an expert in multiple programming languages and development frameworks.
+const CoderInstructions = `You are a highly skilled and resourceful coder agent. Your primary function is to write, debug, and refactor code, as well as to analyze technical specifications and produce high-quality, executable code.
+
+## CRITICAL: FUNCTION-ONLY RESPONSES
+**YOU MUST ONLY RESPOND WITH FUNCTION CALLS. NO TEXT RESPONSES ALLOWED.**
+**NEVER return plain text, code blocks, or explanations directly.**
+**ALL communication must be through the provided function capabilities.**
 
 Your core responsibilities include:
-1.  **Code Generation**: Writing complete functions, classes, and scripts based on detailed or high-level descriptions.
-2.  **Debugging**: Identifying and fixing bugs in provided code snippets.
-3.  **Refactoring**: Improving the structure and design of existing code without changing its external behavior.
-4.  **Technical Analysis**: Interpreting technical requirements and translating them into code.
-5.  **Tool Usage**: You have access to a suite of tools for file management and code execution. Use these tools when the task requires interaction with the file system or running code to validate its correctness.
+1. Use create_file function to write complete code files
+2. Use execute_code function to test implementations  
+3. Use read_file function to analyze existing code
+4. Use edit_file function to modify code
+5. Use analyze_code function to review implementations
+6. Use debug_code function to fix issues
+7. **Tool Usage**: You **must** use these functions when the task requires interaction with the file system
 
-You must always strive to produce clean, efficient, and well-commented code. When writing code, assume a modern development environment unless specified otherwise. Before returning a code solution, you should consider edge cases, potential errors, and best practices. If a task requires writing code in a specific language, always adhere to that language's conventions.
+## Available Functions (Use Exclusively)
+- create_file: Create new files with complete content
+- read_file: Read existing files
+- edit_file: Modify existing files
+- execute_code: Run and test code
+- analyze_code: Analyze code quality
+- debug_code: Fix code issues
+- list_directory: Explore file structure
+- create_directory: Create directories
+- delete_file_or_dir: Remove files/directories
+- refactor_code: Improve code structure
+- generate_tests: Create test cases
 
-When a user provides a coding task, your first action should be to determine if it requires file system interaction (e.g., 'create file', 'read file') or code execution (e.g., 'run python script'). Use the appropriate tool for the job. If the task is purely theoretical, you can respond with the code directly.`
+**CRITICAL: C Programming Language Requirements**
+For C programming tasks, you MUST provide COMPLETE implementations:
+
+1. **Never Create Stub Functions**: All function declarations in .h files MUST have corresponding complete implementations in .c files
+2. **Complete Function Bodies**: Every function must contain working code, not TODO comments or empty bodies  
+3. **Header-Implementation Pairs**: For every .h file created, create the corresponding .c file with full implementations
+4. **Working Main Function**: Always provide a main.c with a complete main() function that demonstrates the functionality
+5. **Proper Includes**: Use correct #include directives and library dependencies
+6. **Compilation Ready**: Code must compile with gcc without errors
+
+**C Implementation Example Process**:
+For creating "math_utils.h":
+1. Use create_file with path="math_utils.h" and complete header declarations
+2. Use create_file with path="math_utils.c" and COMPLETE function implementations (never stubs)
+3. Use create_file with path="main.c" that uses and tests the functions
+4. Use execute_code to test the implementation
+
+## Function Usage Rules
+1. **MANDATORY**: Every response must be a function call
+2. **NO CODE BLOCKS**: Never return  code  blocks directly  
+3. **COMPLETE IMPLEMENTATIONS**: Always provide working code, never stubs
+4. **TEST YOUR CODE**: Use execute_code after creating files
+5. **HANDLE ERRORS**: Use debug_code if execution fails
+
+You must always strive to produce clean, efficient, and well-commented code. When writing code, assume a modern development environment unless specified otherwise. Before returning a code solution, you should consider edge cases, potential errors, and best practices.
+
+When a user provides a coding task, your **first and foremost** action should be to determine what functions to call. Use create_file for new files, execute_code for testing, and other functions as needed. Do not generate text describing what you will do; simply call the appropriate functions directly.`
 
 // NewAgent creates and initializes a new CoderAgent instance.
 func (c *CoderAgent) NewAgent() *CoderAgent {
@@ -54,15 +100,14 @@ func (c *CoderAgent) NewAgent() *CoderAgent {
 		Name:           coderName,
 		Version:        coderVersion,
 		Type:           repository.AgentCoder,
-		Instructions:   CoderInstructions,
+		Instructions:   repository.CoderInstructions,
 		MaxConcurrency: 5,
 		Timeout:        10 * time.Minute,
 		Tags:           []string{"coder", "code", "programming", "development"},
 		Endpoints:      map[string]string{"http": endPoints},
 		Context:        make(map[string]any),
 		Status:         "active",
-
-		LastActive: time.Now(),
+		LastActive:     time.Now(),
 	}
 
 	agent := repository.Agent{
@@ -136,9 +181,12 @@ func (c *CoderAgent) RequestAgent(contents []map[string]any) map[string]any {
 	for _, candidate := range response.Candidates {
 		for _, part := range candidate.Content.Parts {
 			if part.Text != "" {
+				// REJECT TEXT RESPONSES - Force function-only responses
 				newResponse = append(newResponse, map[string]any{
-					"text": part.Text,
+					"error": "Text responses not allowed. Must use function calls only.",
+					"rejected_text": part.Text,
 				})
+
 			} else if part.FunctionCall != nil && part.FunctionCall.Name != "" {
 				if funcResult := c.executeCoderFunction(part.FunctionCall.Name, part.FunctionCall.Args); funcResult != nil {
 					newResponse = append(newResponse, map[string]any{
@@ -158,9 +206,18 @@ func (c *CoderAgent) RequestAgent(contents []map[string]any) map[string]any {
 
 	c.Metadata.LastActive = time.Now()
 
+	// If no valid function calls, return error
+	if len(newResponse) == 0 {
+		return map[string]any{
+			"error": "No function calls received. Coder must respond with function calls only.",
+			"output": nil,
+		}
+	}
+
 	return map[string]any{"error": nil, "output": newResponse}
 }
 
+// executeCoderFunction executes a coder capability based on the function name.
 func (c *CoderAgent) executeCoderFunction(funcName string, args map[string]any) map[string]any {
 	capabilities := GetCoderCapabilitiesMap()
 	if capability, exists := capabilities[funcName]; exists {
@@ -201,6 +258,7 @@ const (
 	GenerateTestsName    = "generate_tests"
 	CreateDirectoryName  = "create_directory"
 	DeleteFileOrDirName  = "delete_file_or_dir"
+	EditFileFromName     = "edit_file"
 	RequestUserInputName = "request_user_input"
 )
 
@@ -214,6 +272,7 @@ const RefactorCodeDescription = "Refactors a code snippet to improve its structu
 const GenerateTestsDescription = "Generates unit tests for a given function or code block."
 const CreateDirectoryDescription = "Creates a new directory at the specified path."
 const DeleteFileOrDirDescription = "Deletes a file or directory at the specified path."
+const EditFileDescription = "Edits a file at a given path by applying a specified change or replacement to its content."
 const RequestUserInputDescription = "Prompts the user for a single line of input from the terminal and returns the response."
 
 var CoderCapabilities = []repository.Function{
@@ -230,7 +289,7 @@ var CoderCapabilities = []repository.Function{
 				"language": {
 					Type:        "string",
 					Description: "The programming language of the code.",
-					Enum:        []string{"python", "go", "javascript", "bash", "java"},
+					Enum:        []string{"python", "go", "javascript", "bash", "java", "c"},
 				},
 				"dependencies": {
 					Type:        "array",
@@ -406,6 +465,25 @@ var CoderCapabilities = []repository.Function{
 		Service: DeleteFileOrDir,
 	},
 	{
+		Name:        EditFileFromName,
+		Description: EditFileDescription,
+		Parameters: repository.Parameters{
+			Type: "object",
+			Properties: map[string]*repository.Properties{
+				"path": {
+					Type:        "string",
+					Description: "The path of the file to edit.",
+				},
+				"changes": {
+					Type:        "string",
+					Description: "The content to replace in the file, or a full new content.",
+				},
+			},
+			Required: []string{"path", "changes"},
+		},
+		Service: EditFile,
+	},
+	{
 		Name:        RequestUserInputName,
 		Description: RequestUserInputDescription,
 		Parameters: repository.Parameters{
@@ -419,7 +497,6 @@ var CoderCapabilities = []repository.Function{
 			Required: []string{"prompt"},
 		},
 		Service: func(data map[string]any) map[string]any {
-			// This function call is routed to the orchestrator, which handles the I/O
 			return nil
 		},
 	},
@@ -446,6 +523,36 @@ func GetCoderCapabilitiesMap() map[string]repository.Function {
 		coderMap[v.Name] = v
 	}
 	return coderMap
+}
+
+// Helper function to extract a code block and its language from a string.
+func extractCodeBlock(text string) (string, string, bool) {
+	re := regexp.MustCompile("(?s)```([a-zA-Z0-9]+)\\n(.*?)```")
+	matches := re.FindStringSubmatch(text)
+	if len(matches) == 3 {
+		return strings.TrimSpace(matches[2]), strings.TrimSpace(matches[1]), true
+	}
+	return "", "", false
+}
+
+// Helper function to get a file extension from a language name.
+func getFileExtension(language string) string {
+	switch strings.ToLower(language) {
+	case "python":
+		return "py"
+	case "go":
+		return "go"
+	case "javascript":
+		return "js"
+	case "c":
+		return "c"
+	case "bash":
+		return "sh"
+	case "java":
+		return "java"
+	default:
+		return "txt"
+	}
 }
 
 // ExecuteCode executes a given code snippet in a temporary file and returns the output.
@@ -487,6 +594,21 @@ func ExecuteCode(data map[string]any) map[string]any {
 		cmd = exec.Command("node", filename)
 	case "bash":
 		cmd = exec.Command("bash", filename)
+	case "c":
+		// For C, we need to compile and then run
+		execFile := filename[:len(filename)-len(filepath.Ext(filename))]
+		compileCmd := exec.Command("gcc", filename, "-o", execFile, "-lm")
+		var compileErr bytes.Buffer
+		compileCmd.Stderr = &compileErr
+		if err := compileCmd.Run(); err != nil {
+			os.Remove(execFile)
+			return map[string]any{
+				"status": "failed",
+				"error":  fmt.Sprintf("compilation failed: %v", compileErr.String()),
+			}
+		}
+		defer os.Remove(execFile)
+		cmd = exec.Command(execFile)
 	case "java":
 		return map[string]any{"error": "Java execution is not yet implemented"}
 	default:
@@ -684,5 +806,33 @@ func DeleteFileOrDir(data map[string]any) map[string]any {
 	return map[string]any{
 		"status":  "completed",
 		"message": fmt.Sprintf("Deleted successfully at %s", path),
+	}
+}
+
+// EditFile edits a file at a given path.
+func EditFile(data map[string]any) map[string]any {
+	path, ok := data["path"].(string)
+	if !ok {
+		return map[string]any{"error": "path is required"}
+	}
+	changes, ok := data["changes"].(string)
+	if !ok {
+		return map[string]any{"error": "changes are required"}
+	}
+
+	originalContent, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]any{"error": fmt.Sprintf("failed to read file for editing: %v", err)}
+	}
+
+	newContent := strings.Replace(string(originalContent), "placeholder", changes, -1)
+
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		return map[string]any{"error": fmt.Sprintf("failed to write edited content to file: %v", err)}
+	}
+
+	return map[string]any{
+		"status":  "completed",
+		"message": fmt.Sprintf("File edited successfully at %s", path),
 	}
 }

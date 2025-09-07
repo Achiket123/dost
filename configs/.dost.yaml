@@ -8,7 +8,7 @@ logger:
   format: "json"
 
 ORCHESTRATOR:
-  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
   MODEL: "gemini-2.5-flash"
 
@@ -18,33 +18,33 @@ CODER:
   MODEL: "gemini-2.5-flash"
 
 CRITIC:
-  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
   MODEL: "gemini-2.5-flash"
 
 EXECUTOR:
-  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
   MODEL: "gemini-2.5-flash"
 
 PLANNER:
-  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
   MODEL: "gemini-2.5-flash"
 
-KNOWLEDGE:
+ANALYSIS:
   API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
   ORGANIZATION: "google"
-  MODEL: "gemini-2.5-flash"
+  MODEL: "gemini-2.0-flash"
 
 #Add The model informations here
 # orchestrator
 ai:
-  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
   MODEL: "gemini-2.0-flash"
 ROOT:
-  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
   MODEL: "gemini-2.5-flash"
 

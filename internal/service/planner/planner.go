@@ -8,61 +8,25 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/viper"
 )
 
-// Minimal repository package definition for Planner to function independently
-// In a real application, this would be a separate shared package.
-const (
-	// AgentType defines the type of an agent, e.g., 'planner', 'coder'.
-	AgentPlanner repository.AgentType = "planner"
-	AgentCoder   repository.AgentType = "coder"
-)
-
-// Status constants
-const (
-	StatusPending    = "pending"
-	StatusInProgress = "in_progress"
-	StatusCompleted  = "completed"
-	StatusFailed     = "failed"
-)
-
-// Placeholder for instructions
-const PlannerInstructions = `You are a highly intelligent and meticulous planner agent. Your primary role is to decompose complex tasks into smaller, manageable subtasks, create detailed execution plans, manage workflows, and track progress. You are capable of analyzing task descriptions, assessing complexity, identifying dependencies, and assigning subtasks to the appropriate specialized agents (e.g., 'coder', 'analyst').
-
-Your core responsibilities include:
-1.  **Decomposition**: Breaking down high-level objectives into actionable steps and subtasks.
-2.  **Planning**: Creating comprehensive 'ExecutionPlan' objects with subtasks, timelines, risk factors, and success metrics.
-3.  **Coordination**: Defining workflows and dependencies to ensure a logical and efficient execution flow.
-4.  **Monitoring**: Tracking the progress of tasks and plans, identifying blockers, and providing recommendations.
-
-You have access to a suite of powerful tools to perform these tasks. You must use these tools whenever a request requires planning, task management, or progress evaluation. Do not attempt to complete the task yourself; instead, generate a plan or a series of tool calls that other agents can execute.
-
-When a user provides a task, your first action should be to analyze it. If it's a complex or multi-step task, use the 'breakdown_task' or 'create_workflow' tool. If the task is to create a new plan, use the 'create_task' tool with the 'execution_plan' parameter. If you need to update an existing plan, use the 'update_plan' tool. Always prioritize using the provided tools to fulfill the user's request.`
-
-// End of minimal repository package definition
-
 const plannerName = "planner"
 const plannerVersion = "0.1.0"
-const plannerStateFile = "planner_state.json"
 
 type PlannerAgent repository.Agent
 
-// PlannerState manages all active plans, breakdowns, and history.
+// Enhanced planner state management
 type PlannerState struct {
 	ActivePlans    map[string]*ExecutionPlan `json:"active_plans"`
 	TaskBreakdowns map[string]*TaskBreakdown `json:"task_breakdowns"`
 	WorkflowStates map[string]*WorkflowState `json:"workflow_states"`
 	PlanHistory    []PlanSnapshot            `json:"plan_history"`
 	Metrics        *PlannerMetrics           `json:"metrics"`
-	mu             sync.RWMutex              `json:"-"`
 }
 
 type ExecutionPlan struct {
@@ -203,126 +167,10 @@ func init() {
 			LastActivity: time.Now(),
 		},
 	}
-	loadPlannerState()
-}
-
-// savePlannerState saves the current planner state to a JSON file.
-func savePlannerState() {
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
-
-	data, err := json.MarshalIndent(plannerState, "", "  ")
-	if err != nil {
-		fmt.Printf("Error marshaling planner state: %v\n", err)
-		return
-	}
-
-	stateDir := getPlannerStateDir()
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		fmt.Printf("Error creating planner state directory: %v\n", err)
-		return
-	}
-
-	filePath := filepath.Join(stateDir, plannerStateFile)
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		fmt.Printf("Error writing planner state file: %v\n", err)
-	}
-}
-
-// loadPlannerState loads the planner state from a JSON file.
-func loadPlannerState() {
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
-
-	stateDir := getPlannerStateDir()
-	filePath := filepath.Join(stateDir, plannerStateFile)
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			fmt.Printf("Error reading planner state file: %v\n", err)
-		}
-		return
-	}
-
-	if err := json.Unmarshal(data, plannerState); err != nil {
-		fmt.Printf("Error unmarshaling planner state: %v\n", err)
-	}
-}
-
-// getPlannerStateDir returns the directory for storing planner state.
-func getPlannerStateDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".dost", "planner")
-}
-
-func (p *PlannerState) GetPlannerState() map[string]any {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return map[string]any{
-		"active_plans":    len(p.ActivePlans),
-		"task_breakdowns": len(p.TaskBreakdowns),
-		"workflow_states": len(p.WorkflowStates),
-		"plan_history":    len(p.PlanHistory),
-		"metrics":         p.Metrics,
-	}
-}
-
-func (p *PlannerState) GetActivePlans() map[string]*ExecutionPlan {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.ActivePlans
-}
-
-func (p *PlannerState) ArchiveCompletedPlans() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	archived := 0
-
-	for planID, plan := range p.ActivePlans {
-		if isPlanComplete(plan) {
-			createPlanSnapshot(planID, "archived")
-			delete(p.ActivePlans, planID)
-			archived++
-		}
-	}
-	savePlannerState()
-	return archived
-}
-
-func (p *PlannerState) GetPlannerMetrics() *PlannerMetrics {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.Metrics.LastActivity = time.Now()
-
-	totalDuration := time.Duration(0)
-	completedCount := 0
-
-	for _, plan := range p.ActivePlans {
-		if isPlanComplete(plan) {
-			if plan.Timeline != nil {
-				duration := plan.Timeline.EndDate.Sub(plan.Timeline.StartDate)
-				totalDuration += duration
-				completedCount++
-			}
-		}
-	}
-
-	if completedCount > 0 {
-		p.Metrics.AveragePlanDuration = totalDuration / time.Duration(completedCount)
-	}
-	savePlannerState()
-	return p.Metrics
 }
 
 func (p *PlannerAgent) NewAgent() *PlannerAgent {
 	model := viper.GetString("ORCHESTRATOR.MODEL")
-	if model == "" {
-		// Fallback model if not set in config
-		model = "gemini-1.5-pro"
-	}
 	endPoints := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
 	id := fmt.Sprintf("planner-%s", uuid.NewString())
 
@@ -331,7 +179,7 @@ func (p *PlannerAgent) NewAgent() *PlannerAgent {
 		Name:           plannerName,
 		Version:        plannerVersion,
 		Type:           repository.AgentPlanner,
-		Instructions:   PlannerInstructions,
+		Instructions:   repository.PlannerInstructions,
 		MaxConcurrency: 3,
 		Timeout:        5 * time.Minute,
 		Tags:           []string{"planner", "agent"},
@@ -415,13 +263,15 @@ func (p *PlannerAgent) RequestAgent(contents []map[string]any) map[string]any {
 		return map[string]any{"error": err.Error(), "output": nil}
 	}
 
-	// Process and normalize response
+	// Process and normalize response - FUNCTION CALLS ONLY
 	newResponse := make([]map[string]any, 0)
 	for _, candidate := range response.Candidates {
 		for _, part := range candidate.Content.Parts {
 			if part.Text != "" {
+				// REJECT TEXT RESPONSES - Force function-only responses
 				newResponse = append(newResponse, map[string]any{
-					"text": part.Text,
+					"error": "Text responses not allowed. Must use function calls only.",
+					"rejected_text": part.Text,
 				})
 			} else if part.FunctionCall != nil && part.FunctionCall.Name != "" {
 				// Execute function call locally if it's a planner capability
@@ -441,12 +291,17 @@ func (p *PlannerAgent) RequestAgent(contents []map[string]any) map[string]any {
 		}
 	}
 
+	// If no valid function calls, return error
+	if len(newResponse) == 0 {
+		return map[string]any{
+			"error": "No function calls received. Planner must respond with function calls only.",
+			"output": nil,
+		}
+	}
+
 	// Update agent activity
 	p.Metadata.LastActive = time.Now()
-	plannerState.mu.Lock()
 	plannerState.Metrics.LastActivity = time.Now()
-	plannerState.mu.Unlock()
-	savePlannerState()
 
 	return map[string]any{"error": nil, "output": newResponse}
 }
@@ -465,6 +320,7 @@ func (p *PlannerAgent) executePlannerFunction(funcName string, args map[string]a
 // Enhanced task decomposition with intelligent analysis
 func DecomposeTask(data map[string]any) map[string]any {
 	taskDescription, _ := data["description"].(string)
+	// complexity, _ := data["complexity"].(string)
 	domain, _ := data["domain"].(string)
 
 	if taskDescription == "" {
@@ -477,7 +333,12 @@ func DecomposeTask(data map[string]any) map[string]any {
 	breakdownID := fmt.Sprintf("breakdown_%s", uuid.NewString())
 
 	// Generate subtasks based on analysis
-	subtasks := generateIntelligentSubtasks(taskDescription, analysis)
+	var subtasks []SubTask
+	if strings.ToLower(domain) == "c_programming" || strings.Contains(strings.ToLower(taskDescription), "c library") || strings.Contains(strings.ToLower(taskDescription), "c program") {
+		subtasks = generateCProgrammingSubtasks(taskDescription, analysis)
+	} else {
+		subtasks = generateIntelligentSubtasks(taskDescription, analysis)
+	}
 
 	// Create task breakdown
 	breakdown := &TaskBreakdown{
@@ -493,16 +354,13 @@ func DecomposeTask(data map[string]any) map[string]any {
 	}
 
 	// Store breakdown
-	plannerState.mu.Lock()
 	plannerState.TaskBreakdowns[breakdownID] = breakdown
 	plannerState.Metrics.TotalPlansCreated++
-	plannerState.mu.Unlock()
-	savePlannerState()
 
 	return map[string]any{
 		"status":       "decomposed",
 		"breakdown_id": breakdownID,
-		"subtasks":     subtasks,
+		"tasks":        convertSubtasksToTaskFormat(subtasks),
 		"strategy":     analysis.Strategy,
 		"complexity":   analysis.ComplexityLevel,
 		"estimates":    analysis.Estimates,
@@ -558,10 +416,7 @@ func CreateWorkflow(data map[string]any) map[string]any {
 	}
 
 	// Store workflow
-	plannerState.mu.Lock()
 	plannerState.WorkflowStates[workflowID] = workflow
-	plannerState.mu.Unlock()
-	savePlannerState()
 
 	return map[string]any{
 		"status":      "workflow_created",
@@ -580,16 +435,10 @@ func UpdatePlan(data map[string]any) map[string]any {
 		return map[string]any{"error": "plan_id is required"}
 	}
 
-	plannerState.mu.RLock()
 	plan, exists := plannerState.ActivePlans[planID]
-	plannerState.mu.RUnlock()
-
 	if !exists {
 		return map[string]any{"error": "plan not found"}
 	}
-
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
 
 	// Create snapshot before update
 	createPlanSnapshot(planID, "before_update")
@@ -616,8 +465,6 @@ func UpdatePlan(data map[string]any) map[string]any {
 	// Create snapshot after update
 	createPlanSnapshot(planID, "after_update")
 
-	savePlannerState()
-
 	return map[string]any{
 		"status":     "plan_updated",
 		"plan_id":    planID,
@@ -635,10 +482,7 @@ func GetNextStep(data map[string]any) map[string]any {
 		return map[string]any{"error": "plan_id is required"}
 	}
 
-	plannerState.mu.RLock()
 	plan, exists := plannerState.ActivePlans[planID]
-	plannerState.mu.RUnlock()
-
 	if !exists {
 		return map[string]any{"error": "plan not found"}
 	}
@@ -670,7 +514,7 @@ func GetNextStep(data map[string]any) map[string]any {
 		"status":              "next_step_found",
 		"plan_id":             planID,
 		"next_task":           nextTask,
-		"estimated_duration":  nextTask.EstimatedDuration.String(),
+		"estimated_duration":  nextTask.EstimatedDuration,
 		"required_agent":      nextTask.RequiredAgent,
 		"tools_needed":        nextTask.Tools,
 		"acceptance_criteria": nextTask.AcceptanceCriteria,
@@ -686,10 +530,7 @@ func EvaluatePlanProgress(data map[string]any) map[string]any {
 		return map[string]any{"error": "plan_id is required"}
 	}
 
-	plannerState.mu.RLock()
 	plan, exists := plannerState.ActivePlans[planID]
-	plannerState.mu.RUnlock()
-
 	if !exists {
 		return map[string]any{"error": "plan not found"}
 	}
@@ -713,10 +554,7 @@ func EvaluatePlanProgress(data map[string]any) map[string]any {
 	}
 
 	// Update metrics
-	plannerState.mu.Lock()
 	plannerState.Metrics.AverageCompletion = (plannerState.Metrics.AverageCompletion + progress) / 2
-	plannerState.mu.Unlock()
-	savePlannerState()
 
 	return evaluation
 }
@@ -730,10 +568,7 @@ func RequestMissingInfo(data map[string]any) map[string]any {
 		return map[string]any{"error": "plan_id is required"}
 	}
 
-	plannerState.mu.RLock()
 	plan, exists := plannerState.ActivePlans[planID]
-	plannerState.mu.RUnlock()
-
 	if !exists {
 		return map[string]any{"error": "plan not found"}
 	}
@@ -753,15 +588,24 @@ func RequestMissingInfo(data map[string]any) map[string]any {
 // Enhanced task creation with planning intelligence
 func CreateTask(data map[string]any) map[string]any {
 	title, _ := data["title"].(string)
-	// _, _ := data["created_by"].(string)
+	createdBy, _ := data["created_by"].(string)
 	planningComplete, _ := data["planning_complete"].(bool)
 
 	if title == "" {
 		return map[string]any{"error": "title is required"}
 	}
 
-	// Placeholder for repository.NewTask
-	task := map[string]any{"output": map[string]any{"id": uuid.NewString(), "title": title}}
+	// Create base task
+	taskParams := map[string]any{
+		"title":     title,
+		"createdBy": createdBy,
+		"status":    repository.StatusPending,
+	}
+
+	task := repository.NewTask(taskParams)
+	if task["error"] != nil {
+		return task
+	}
 
 	// If planning is requested, create execution plan
 	var executionPlan *ExecutionPlan
@@ -785,11 +629,8 @@ func CreateTask(data map[string]any) map[string]any {
 			executionPlan.Timeline = generatePlanTimeline(executionPlan.Subtasks)
 
 			// Store plan
-			plannerState.mu.Lock()
 			plannerState.ActivePlans[planID] = executionPlan
 			plannerState.Metrics.TotalPlansCreated++
-			plannerState.mu.Unlock()
-			savePlannerState()
 		}
 	}
 
@@ -839,10 +680,7 @@ func BreakDownTask(data map[string]any) map[string]any {
 		Status:       "created",
 	}
 
-	plannerState.mu.Lock()
 	plannerState.TaskBreakdowns[breakdown.ID] = breakdown
-	plannerState.mu.Unlock()
-	savePlannerState()
 
 	return map[string]any{
 		"status":             "task_broken_down",
@@ -852,7 +690,7 @@ func BreakDownTask(data map[string]any) map[string]any {
 		"strategy":           strategy,
 		"complexity":         analysis.ComplexityLevel,
 		"total_steps":        len(breakdown.Steps),
-		"estimated_duration": analysis.Estimates.TotalDuration.String(),
+		"estimated_duration": analysis.Estimates.TotalDuration,
 		"confidence":         analysis.Estimates.ConfidenceLevel,
 	}
 }
@@ -869,7 +707,6 @@ func UpdateTaskStatus(data map[string]any) map[string]any {
 
 	// Update associated plans if task is part of one
 	updatedPlans := updateRelatedPlans(taskID, status, context)
-	savePlannerState()
 
 	response := map[string]any{
 		"status":     "task_status_updated",
@@ -909,7 +746,6 @@ func TrackProgress(data map[string]any) map[string]any {
 
 	// Update related plans
 	planUpdates := updatePlanProgress(taskID, phase, progressValue)
-	savePlannerState()
 
 	response := map[string]any{
 		"status":         "progress_logged",
@@ -961,180 +797,11 @@ func EvaluateTaskCompletion(data map[string]any) map[string]any {
 	}
 
 	// Update planner metrics
-	plannerState.mu.Lock()
 	if isComplete {
 		plannerState.Metrics.CompletedPlans++
 	}
-	plannerState.mu.Unlock()
-	savePlannerState()
 
 	return evaluation
-}
-
-// PausePlan pauses a plan's execution.
-func PausePlan(data map[string]any) map[string]any {
-	planID, ok := data["plan_id"].(string)
-	if !ok || planID == "" {
-		return map[string]any{"error": "plan_id is required"}
-	}
-
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
-
-	plan, exists := plannerState.ActivePlans[planID]
-	if !exists {
-		return map[string]any{"error": "plan not found"}
-	}
-
-	plan.Status = "paused"
-	plan.UpdatedAt = time.Now()
-	createPlanSnapshot(planID, "paused")
-	savePlannerState()
-
-	return map[string]any{
-		"status":  "plan_paused",
-		"plan_id": planID,
-	}
-}
-
-// ResumePlan resumes a paused plan.
-func ResumePlan(data map[string]any) map[string]any {
-	planID, ok := data["plan_id"].(string)
-	if !ok || planID == "" {
-		return map[string]any{"error": "plan_id is required"}
-	}
-
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
-
-	plan, exists := plannerState.ActivePlans[planID]
-	if !exists {
-		return map[string]any{"error": "plan not found"}
-	}
-
-	if plan.Status != "paused" {
-		return map[string]any{"error": "plan is not paused"}
-	}
-
-	plan.Status = "active"
-	plan.UpdatedAt = time.Now()
-	createPlanSnapshot(planID, "resumed")
-	savePlannerState()
-
-	return map[string]any{
-		"status":  "plan_resumed",
-		"plan_id": planID,
-	}
-}
-
-// CancelPlan cancels a plan and marks it as failed.
-func CancelPlan(data map[string]any) map[string]any {
-	planID, ok := data["plan_id"].(string)
-	if !ok || planID == "" {
-		return map[string]any{"error": "plan_id is required"}
-	}
-
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
-
-	plan, exists := plannerState.ActivePlans[planID]
-	if !exists {
-		return map[string]any{"error": "plan not found"}
-	}
-
-	plan.Status = "canceled"
-	plan.UpdatedAt = time.Now()
-	createPlanSnapshot(planID, "canceled")
-	savePlannerState()
-
-	return map[string]any{
-		"status":  "plan_canceled",
-		"plan_id": planID,
-	}
-}
-
-// ClonePlan creates a new plan from an existing one.
-func ClonePlan(data map[string]any) map[string]any {
-	planID, ok := data["plan_id"].(string)
-	if !ok || planID == "" {
-		return map[string]any{"error": "plan_id is required"}
-	}
-
-	plannerState.mu.RLock()
-	plan, exists := plannerState.ActivePlans[planID]
-	plannerState.mu.RUnlock()
-
-	if !exists {
-		return map[string]any{"error": "plan not found"}
-	}
-
-	newPlanID := fmt.Sprintf("plan_%s", uuid.NewString())
-
-	// Deep copy the plan
-	newPlan := &ExecutionPlan{
-		ID:             newPlanID,
-		Overview:       plan.Overview,
-		Subtasks:       make([]SubTask, len(plan.Subtasks)),
-		RiskFactors:    append([]string{}, plan.RiskFactors...),
-		SuccessMetrics: plan.SuccessMetrics,
-		Dependencies:   deepCopyDependencies(plan.Dependencies),
-		Resources:      append([]string{}, plan.Resources...),
-		Context:        copyMapSafe(plan.Context),
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
-		Status:         "active",
-	}
-
-	// Copy and reset subtask status
-	for i, subtask := range plan.Subtasks {
-		newSubtaskID := fmt.Sprintf("subtask_%s_%d", uuid.NewString(), i)
-		newSubtask := subtask
-		newSubtask.ID = newSubtaskID
-		newSubtask.Status = "pending"
-		newSubtask.StartTime = nil
-		newSubtask.EndTime = nil
-		newSubtask.ActualDuration = nil
-		newSubtask.Dependencies = updateDependenciesForClone(subtask.Dependencies, plan.Subtasks, newPlan.Subtasks)
-		newPlan.Subtasks[i] = newSubtask
-	}
-
-	newPlan.Timeline = generatePlanTimeline(newPlan.Subtasks)
-
-	plannerState.mu.Lock()
-	plannerState.ActivePlans[newPlanID] = newPlan
-	plannerState.Metrics.TotalPlansCreated++
-	plannerState.mu.Unlock()
-	savePlannerState()
-
-	return map[string]any{
-		"status":      "plan_cloned",
-		"old_plan_id": planID,
-		"new_plan_id": newPlanID,
-		"new_plan":    newPlan,
-	}
-}
-
-func deepCopyDependencies(deps map[string][]string) map[string][]string {
-	newDeps := make(map[string][]string)
-	for k, v := range deps {
-		newDeps[k] = append([]string{}, v...)
-	}
-	return newDeps
-}
-
-func updateDependenciesForClone(deps []string, oldSubtasks, newSubtasks []SubTask) []string {
-	newDeps := make([]string, len(deps))
-	for i, depID := range deps {
-		// This is a simplified approach. A more robust solution would map old IDs to new IDs.
-		// For now, we assume dependencies are within the same plan and the order is preserved.
-		for j, oldSub := range oldSubtasks {
-			if oldSub.ID == depID {
-				newDeps[i] = newSubtasks[j].ID
-				break
-			}
-		}
-	}
-	return newDeps
 }
 
 // Helper functions for enhanced planning capabilities
@@ -1836,9 +1503,6 @@ func assessMissingInfoImpact(plan *ExecutionPlan, missingInfo []string) string {
 }
 
 func createPlanSnapshot(planID, reason string) {
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
-
 	plan, exists := plannerState.ActivePlans[planID]
 	if !exists {
 		return
@@ -1863,9 +1527,6 @@ func createPlanSnapshot(planID, reason string) {
 
 func updateRelatedPlans(taskID, status string, context map[string]any) []string {
 	updatedPlans := make([]string, 0)
-
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
 
 	for planID, plan := range plannerState.ActivePlans {
 		for i := range plan.Subtasks {
@@ -1900,9 +1561,6 @@ func updateRelatedPlans(taskID, status string, context map[string]any) []string 
 func assessPlanImpacts(updatedPlans []string, status string) []map[string]any {
 	impacts := make([]map[string]any, 0)
 
-	plannerState.mu.RLock()
-	defer plannerState.mu.RUnlock()
-
 	for _, planID := range updatedPlans {
 		plan := plannerState.ActivePlans[planID]
 		progress := calculatePlanProgress(plan)
@@ -1930,9 +1588,6 @@ func assessPlanImpacts(updatedPlans []string, status string) []map[string]any {
 
 func updatePlanProgress(taskID, phase string, progressValue float64) []map[string]any {
 	updates := make([]map[string]any, 0)
-
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
 
 	for planID, plan := range plannerState.ActivePlans {
 		for i := range plan.Subtasks {
@@ -1981,10 +1636,14 @@ func calculateOverallProgress(planUpdates []map[string]any) float64 {
 }
 
 func calculateCompletionConfidence(tracker *repository.TaskTracker) float64 {
+	// This would need to be implemented based on your TaskTracker structure
+	// For now, return a reasonable default
 	return 0.8
 }
 
 func analyzeCompletionMetrics(tracker *repository.TaskTracker) map[string]any {
+	// This would analyze various metrics from the tracker
+	// For now, return basic metrics
 	return map[string]any{
 		"completion_indicators": []string{"basic_analysis"},
 		"confidence_factors":    []string{"tracker_data_available"},
@@ -1992,9 +1651,6 @@ func analyzeCompletionMetrics(tracker *repository.TaskTracker) map[string]any {
 }
 
 func checkPlanCompletion(taskID string) map[string]any {
-	plannerState.mu.RLock()
-	defer plannerState.mu.RUnlock()
-
 	for planID, plan := range plannerState.ActivePlans {
 		for _, subtask := range plan.Subtasks {
 			if subtask.ID == taskID {
@@ -2539,8 +2195,6 @@ func determinePhaseAgent(phase string, requiredAgents []string) string {
 
 // Enhanced planner state management functions
 func (p *PlannerAgent) GetPlannerState() map[string]any {
-	plannerState.mu.RLock()
-	defer plannerState.mu.RUnlock()
 	return map[string]any{
 		"active_plans":    len(plannerState.ActivePlans),
 		"task_breakdowns": len(plannerState.TaskBreakdowns),
@@ -2551,22 +2205,15 @@ func (p *PlannerAgent) GetPlannerState() map[string]any {
 }
 
 func (p *PlannerAgent) GetActivePlans() map[string]*ExecutionPlan {
-	plannerState.mu.RLock()
-	defer plannerState.mu.RUnlock()
 	return plannerState.ActivePlans
 }
 
 func (p *PlannerAgent) GetPlanByID(planID string) (*ExecutionPlan, bool) {
-	plannerState.mu.RLock()
-	defer plannerState.mu.RUnlock()
 	plan, exists := plannerState.ActivePlans[planID]
 	return plan, exists
 }
 
 func (p *PlannerAgent) ArchiveCompletedPlans() int {
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
-
 	archived := 0
 
 	for planID, plan := range plannerState.ActivePlans {
@@ -2577,14 +2224,11 @@ func (p *PlannerAgent) ArchiveCompletedPlans() int {
 			archived++
 		}
 	}
-	savePlannerState()
+
 	return archived
 }
 
 func (p *PlannerAgent) GetPlannerMetrics() *PlannerMetrics {
-	plannerState.mu.Lock()
-	defer plannerState.mu.Unlock()
-
 	// Update real-time metrics
 	plannerState.Metrics.LastActivity = time.Now()
 
@@ -2604,7 +2248,7 @@ func (p *PlannerAgent) GetPlannerMetrics() *PlannerMetrics {
 	if completedCount > 0 {
 		plannerState.Metrics.AveragePlanDuration = totalDuration / time.Duration(completedCount)
 	}
-	savePlannerState()
+
 	return plannerState.Metrics
 }
 
@@ -2673,7 +2317,6 @@ const (
 	GetNextStepName          = "get_next_step"
 	EvaluatePlanProgressName = "evaluate_plan_progress"
 	RequestMissingInfoName   = "request_missing_info"
-	RequestUserInputName     = "request_user_input"
 
 	// State management capabilities
 	GetPlannerStateName       = "get_planner_state"
@@ -2756,31 +2399,6 @@ Analyzes plan completeness and generates specific information requests.
 Required: "plan_id". Optional: "info_type"
 `
 
-// --------------------------- Plan Lifecycle Capability Descriptions ---------------------------
-
-const PausePlanDescription = `
-Pause the execution of an active plan.
-Required: "plan_id"
-`
-
-const ResumePlanDescription = `
-Resume a paused plan's execution.
-Required: "plan_id"
-`
-
-const CancelPlanDescription = `
-Cancel a plan's execution and mark it as terminated.
-Required: "plan_id"
-`
-
-const ClonePlanDescription = `
-Create a new, duplicate plan from an existing plan.
-Required: "plan_id"
-`
-const RequestUserInputDescription = `
-Prompts the user for a single line of input from the terminal and returns the response.
-`
-
 // --------------------------- Enhanced Planner Capability Array ---------------------------
 
 var EnhancedPlannerCapabilities = []repository.Function{
@@ -2789,7 +2407,7 @@ var EnhancedPlannerCapabilities = []repository.Function{
 		Name:        CreateTaskName,
 		Description: CreateTaskDescription,
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"title": {
 					Type:        "string",
@@ -2806,7 +2424,6 @@ var EnhancedPlannerCapabilities = []repository.Function{
 				"execution_plan": {
 					Type:        "object",
 					Description: "Optional: Detailed execution plan with subtasks, overview, and metrics.",
-
 					Properties: map[string]*repository.Properties{
 						"overview": {
 							Type:        "string",
@@ -2815,10 +2432,18 @@ var EnhancedPlannerCapabilities = []repository.Function{
 						"subtasks": {
 							Type:        "array",
 							Description: "Array of subtask objects",
+							Items: &repository.Properties{
+								Type: "object",
+								Description: "Individual subtask definition",
+							},
 						},
 						"risk_factors": {
 							Type:        "array",
 							Description: "Array of identified risk factors",
+							Items: &repository.Properties{
+								Type: "string",
+								Description: "Individual risk factor",
+							},
 						},
 						"success_metrics": {
 							Type:        "string",
@@ -2833,357 +2458,739 @@ var EnhancedPlannerCapabilities = []repository.Function{
 			},
 			Required: []string{"title"},
 		},
-		Service: CreateTask,
-	},
-
-	{
-		Name:        BreakDownTaskName,
-		Description: BreakDownTaskDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"task_id": {
-					Type:        "string",
-					Description: "Unique identifier of the task to break down.",
-				},
-				"description": {
-					Type:        "string",
-					Description: "Description or context of the task to break down.",
-				},
-				"complexity": {
-					Type:        "string",
-					Description: "Optional: Expected complexity level (simple, moderate, complex, very_complex).",
-				},
-				"domain": {
-					Type:        "string",
-					Description: "Optional: Domain or area of the task (e.g., 'web_development', 'data_analysis').",
-				},
-			},
-			Required: []string{"task_id", "description"},
-		},
-		Service: BreakDownTask,
-	},
-
-	{
-		Name:        UpdateTaskStatusName,
-		Description: UpdateTaskStatusDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"task_id": {
-					Type:        "string",
-					Description: "Unique identifier of the task to update.",
-				},
-				"status": {
-					Type:        "string",
-					Description: "The new status for the task (pending, in_progress, completed, failed).",
-					Enum:        []string{"pending", "in_progress", "completed", "failed", "paused", "canceled"},
-				},
-				"context": {
-					Type:        "object",
-					Description: "Optional: Additional context about the status update.",
-				},
-			},
-			Required: []string{"task_id", "status"},
-		},
-		Service: UpdateTaskStatus,
-	},
-
-	{
-		Name:        TrackProgressName,
-		Description: TrackProgressDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"task_id": {
-					Type:        "string",
-					Description: "Unique identifier of the task being tracked.",
-				},
-				"phase": {
-					Type:        "string",
-					Description: "Current phase of the task being logged.",
-				},
-				"progress": {
-					Type:        "number",
-					Description: "Optional: Progress value between 0.0 and 1.0.",
-				},
-				"metrics": {
-					Type:        "object",
-					Description: "Optional: Additional metrics and measurements.",
-				},
-			},
-			Required: []string{"task_id", "phase"},
-		},
-		Service: TrackProgress,
-	},
-
-	{
-		Name:        EvaluateTaskCompletionName,
-		Description: EvaluateTaskCompletionDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"tracker": {
-					Type:        "object",
-					Description: "TaskTracker object containing evaluation data.",
-				},
-			},
-			Required: []string{"tracker"},
-		},
 		Service: EvaluateTaskCompletion,
 	},
+
+	// Advanced planning capabilities
 	{
 		Name:        DecomposeTaskName,
 		Description: DecomposeTaskDescription,
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"description": {
 					Type:        "string",
-					Description: "The description of the task to decompose.",
+					Description: "Detailed description of the task to decompose.",
 				},
 				"complexity": {
 					Type:        "string",
-					Description: "Optional: The expected complexity level of the task.",
+					Description: "Optional: Expected complexity level.",
 				},
 				"domain": {
 					Type:        "string",
-					Description: "Optional: The domain or area of the task.",
+					Description: "Optional: Task domain or category.",
 				},
 				"constraints": {
-					Type:        "array",
-					Description: "Optional: Any specific constraints for decomposition.",
+					Type:        "object",
+					Description: "Optional: Time, resource, or other constraints.",
 				},
 			},
 			Required: []string{"description"},
 		},
 		Service: DecomposeTask,
 	},
+
 	{
 		Name:        CreateWorkflowName,
 		Description: CreateWorkflowDescription,
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"name": {
 					Type:        "string",
-					Description: "The name of the new workflow.",
+					Description: "Name of the workflow to create.",
 				},
 				"description": {
 					Type:        "string",
-					Description: "A detailed description of the workflow.",
+					Description: "Optional: Detailed description of the workflow.",
 				},
 				"steps": {
 					Type:        "array",
-					Description: "An array of workflow step objects.",
+					Description: "Optional: Array of workflow step definitions.",
+					Items: &repository.Properties{
+						Type: "object",
+						Description: "Individual workflow step",
+					},
 				},
 				"context": {
 					Type:        "object",
-					Description: "Optional: Contextual information for the workflow.",
+					Description: "Optional: Additional context for the workflow.",
 				},
 			},
-			Required: []string{"name", "steps"},
+			Required: []string{"name"},
 		},
 		Service: CreateWorkflow,
 	},
+
 	{
 		Name:        UpdatePlanName,
 		Description: UpdatePlanDescription,
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"plan_id": {
 					Type:        "string",
-					Description: "The unique identifier of the plan to update.",
+					Description: "Unique identifier of the plan to update.",
 				},
 				"updates": {
 					Type:        "object",
-					Description: "A map of fields to update, e.g., {'status': 'completed'}.",
+					Description: "Map of fields to update with new values.",
 				},
 			},
 			Required: []string{"plan_id", "updates"},
 		},
 		Service: UpdatePlan,
 	},
+
 	{
 		Name:        GetNextStepName,
 		Description: GetNextStepDescription,
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"plan_id": {
 					Type:        "string",
-					Description: "The unique identifier of the plan.",
+					Description: "Unique identifier of the plan.",
 				},
 				"agent_capabilities": {
 					Type:        "array",
-					Description: "Optional: A list of capabilities of the requesting agent.",
+					Description: "Optional: Array of available agent capabilities.",
+					Items: &repository.Properties{
+						Type: "string",
+						Description: "Individual agent capability",
+					},
 				},
 			},
 			Required: []string{"plan_id"},
 		},
 		Service: GetNextStep,
 	},
+
 	{
 		Name:        EvaluatePlanProgressName,
 		Description: EvaluatePlanProgressDescription,
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"plan_id": {
 					Type:        "string",
-					Description: "The unique identifier of the plan to evaluate.",
+					Description: "Unique identifier of the plan to evaluate.",
 				},
 			},
 			Required: []string{"plan_id"},
 		},
 		Service: EvaluatePlanProgress,
 	},
+
 	{
 		Name:        RequestMissingInfoName,
 		Description: RequestMissingInfoDescription,
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"plan_id": {
 					Type:        "string",
-					Description: "The unique identifier of the plan that needs information.",
+					Description: "Unique identifier of the plan.",
 				},
 				"info_type": {
 					Type:        "string",
-					Description: "The type of information missing (e.g., 'requirements', 'resources').",
+					Description: "Optional: Specific type of information needed (requirements, resources, timeline).",
 				},
 			},
 			Required: []string{"plan_id"},
 		},
 		Service: RequestMissingInfo,
 	},
+
+	// State management capabilities
+	{
+		Name:        GetPlannerStateName,
+		Description: "Get current state of the planner including active plans, breakdowns, and metrics.",
+		Parameters: repository.Parameters{
+			Type:       repository.TypeObject,
+			Properties: map[string]*repository.Properties{},
+			Required:   []string{},
+		},
+		Service: GetPlannerStateWrapper,
+	},
+
+	{
+		Name:        GetActivePlansName,
+		Description: "Retrieve all currently active execution plans with their details.",
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"include_details": {
+					Type:        "boolean",
+					Description: "Optional: Include full plan details (default: false).",
+				},
+			},
+			Required: []string{},
+		},
+		Service: GetActivePlansWrapper,
+	},
+
+	{
+		Name:        ArchiveCompletedPlansName,
+		Description: "Archive all completed plans to free up active state space.",
+		Parameters: repository.Parameters{
+			Type:       repository.TypeObject,
+			Properties: map[string]*repository.Properties{},
+			Required:   []string{},
+		},
+		Service: ArchiveCompletedPlansWrapper,
+	},
+
+	{
+		Name:        GetPlannerMetricsName,
+		Description: "Get comprehensive planner performance metrics and statistics.",
+		Parameters: repository.Parameters{
+			Type:       repository.TypeObject,
+			Properties: map[string]*repository.Properties{},
+			Required:   []string{},
+		},
+		Service: GetPlannerMetricsWrapper,
+	},
+
+	// Plan lifecycle management
 	{
 		Name:        PausePlanName,
-		Description: PausePlanDescription,
+		Description: "Pause an active plan, stopping execution but preserving state.",
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"plan_id": {
 					Type:        "string",
-					Description: "The ID of the plan to pause.",
+					Description: "Unique identifier of the plan to pause.",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Optional: Reason for pausing the plan.",
 				},
 			},
 			Required: []string{"plan_id"},
 		},
 		Service: PausePlan,
 	},
+
 	{
 		Name:        ResumePlanName,
-		Description: ResumePlanDescription,
+		Description: "Resume a paused plan, continuing execution from where it left off.",
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"plan_id": {
 					Type:        "string",
-					Description: "The ID of the plan to resume.",
+					Description: "Unique identifier of the plan to resume.",
 				},
 			},
 			Required: []string{"plan_id"},
 		},
 		Service: ResumePlan,
 	},
+
 	{
 		Name:        CancelPlanName,
-		Description: CancelPlanDescription,
+		Description: "Cancel an active plan, stopping execution and marking as cancelled.",
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"plan_id": {
 					Type:        "string",
-					Description: "The ID of the plan to cancel.",
+					Description: "Unique identifier of the plan to cancel.",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Optional: Reason for cancelling the plan.",
 				},
 			},
 			Required: []string{"plan_id"},
 		},
 		Service: CancelPlan,
 	},
+
 	{
 		Name:        ClonePlanName,
-		Description: ClonePlanDescription,
+		Description: "Clone an existing plan to create a new plan with similar structure.",
 		Parameters: repository.Parameters{
-			Type: "object",
+			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
-				"plan_id": {
+				"source_plan_id": {
 					Type:        "string",
-					Description: "The ID of the plan to clone.",
+					Description: "Unique identifier of the plan to clone.",
+				},
+				"new_plan_name": {
+					Type:        "string",
+					Description: "Optional: Name for the new cloned plan.",
+				},
+				"modifications": {
+					Type:        "object",
+					Description: "Optional: Modifications to apply to the cloned plan.",
 				},
 			},
-			Required: []string{"plan_id"},
+			Required: []string{"source_plan_id"},
 		},
 		Service: ClonePlan,
 	},
-	{
-		Name:        GetPlannerStateName,
-		Description: "Retrieve the current high-level state of the planner.",
-		Parameters: repository.Parameters{
-			Type: "object",
-		},
-		Service: func(data map[string]any) map[string]any {
-			return plannerState.GetPlannerState()
-		},
-	},
-	{
-		Name:        GetActivePlansName,
-		Description: "Get a list of all active plans with their details.",
-		Parameters: repository.Parameters{
-			Type: "object",
-		},
-		Service: func(data map[string]any) map[string]any {
-			return map[string]any{
-				"active_plans": plannerState.GetActivePlans(),
-			}
-		},
-	},
-	{
-		Name:        ArchiveCompletedPlansName,
-		Description: "Archive all completed plans to clean up the active plans list.",
-		Parameters: repository.Parameters{
-			Type: "object",
-		},
-		Service: func(data map[string]any) map[string]any {
-			count := plannerState.ArchiveCompletedPlans()
-			return map[string]any{
-				"status": "archived",
-				"count":  count,
-			}
-		},
-	},
-	{
-		Name:        GetPlannerMetricsName,
-		Description: "Get performance metrics for the planner, such as completion rates.",
-		Parameters: repository.Parameters{
-			Type: "object",
-		},
-		Service: func(data map[string]any) map[string]any {
-			return map[string]any{
-				"metrics": plannerState.GetPlannerMetrics(),
-			}
-		},
-	},
-	{
-		Name:        RequestUserInputName,
-		Description: "Prompts the user for a single line of input from the terminal and returns the response.",
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"prompt": {
-					Type:        "string",
-					Description: "The message to display to the user when requesting input.",
-				},
-			},
-			Required: []string{"prompt"},
-		},
-		Service: func(data map[string]any) map[string]any {
-			return nil
-		},
-	},
 }
+
+// --------------------------- Service Function Implementations ---------------------------
+
+// Wrapper functions for state management
+func GetPlannerStateWrapper(data map[string]any) map[string]any {
+	// This would need to be called on a planner agent instance
+	// For now, return the global state
+	return map[string]any{
+		"status":          "success",
+		"active_plans":    len(plannerState.ActivePlans),
+		"task_breakdowns": len(plannerState.TaskBreakdowns),
+		"workflow_states": len(plannerState.WorkflowStates),
+		"plan_history":    len(plannerState.PlanHistory),
+		"metrics":         plannerState.Metrics,
+	}
+}
+
+func GetActivePlansWrapper(data map[string]any) map[string]any {
+	includeDetails, _ := data["include_details"].(bool)
+
+	plans := make([]map[string]any, 0)
+	for planID, plan := range plannerState.ActivePlans {
+		planInfo := map[string]any{
+			"plan_id":    planID,
+			"overview":   plan.Overview,
+			"status":     plan.Status,
+			"progress":   calculatePlanProgress(plan),
+			"created_at": plan.CreatedAt,
+			"updated_at": plan.UpdatedAt,
+		}
+
+		if includeDetails {
+			planInfo["subtasks"] = plan.Subtasks
+			planInfo["risk_factors"] = plan.RiskFactors
+			planInfo["success_metrics"] = plan.SuccessMetrics
+			planInfo["timeline"] = plan.Timeline
+			planInfo["resources"] = plan.Resources
+		} else {
+			planInfo["subtask_count"] = len(plan.Subtasks)
+			planInfo["risk_count"] = len(plan.RiskFactors)
+		}
+
+		plans = append(plans, planInfo)
+	}
+
+	return map[string]any{
+		"status": "success",
+		"plans":  plans,
+		"total":  len(plans),
+	}
+}
+
+func ArchiveCompletedPlansWrapper(data map[string]any) map[string]any {
+	archived := 0
+	archivedPlans := make([]string, 0)
+
+	for planID, plan := range plannerState.ActivePlans {
+		if isPlanComplete(plan) {
+			createPlanSnapshot(planID, "archived")
+			delete(plannerState.ActivePlans, planID)
+			archived++
+			archivedPlans = append(archivedPlans, planID)
+		}
+	}
+
+	return map[string]any{
+		"status":         "success",
+		"archived_count": archived,
+		"archived_plans": archivedPlans,
+		"remaining":      len(plannerState.ActivePlans),
+	}
+}
+
+func GetPlannerMetricsWrapper(data map[string]any) map[string]any {
+	metrics := plannerState.Metrics
+
+	// Calculate additional real-time metrics
+	activeCount := len(plannerState.ActivePlans)
+	inProgressCount := 0
+	pausedCount := 0
+
+	for _, plan := range plannerState.ActivePlans {
+		switch plan.Status {
+		case "in_progress":
+			inProgressCount++
+		case "paused":
+			pausedCount++
+		}
+	}
+
+	return map[string]any{
+		"status": "success",
+		"metrics": map[string]any{
+			"total_plans_created":   metrics.TotalPlansCreated,
+			"completed_plans":       metrics.CompletedPlans,
+			"failed_plans":          metrics.FailedPlans,
+			"active_plans":          activeCount,
+			"in_progress_plans":     inProgressCount,
+			"paused_plans":          pausedCount,
+			"average_completion":    metrics.AverageCompletion,
+			"average_plan_duration": metrics.AveragePlanDuration.String(),
+			"last_activity":         metrics.LastActivity,
+			"success_rate":          calculateSuccessRate(metrics),
+		},
+	}
+}
+
+// Plan lifecycle management functions
+func PausePlan(data map[string]any) map[string]any {
+	planID, _ := data["plan_id"].(string)
+	reason, _ := data["reason"].(string)
+
+	if planID == "" {
+		return map[string]any{"error": "plan_id is required"}
+	}
+
+	plan, exists := plannerState.ActivePlans[planID]
+	if !exists {
+		return map[string]any{"error": "plan not found"}
+	}
+
+	if plan.Status == "paused" {
+		return map[string]any{"error": "plan is already paused"}
+	}
+
+	// Create snapshot before pausing
+	createPlanSnapshot(planID, "before_pause")
+
+	// Update plan status
+	plan.Status = "paused"
+	plan.UpdatedAt = time.Now()
+
+	// Add pause reason to context
+	if plan.Context == nil {
+		plan.Context = make(map[string]any)
+	}
+	plan.Context["pause_reason"] = reason
+	plan.Context["paused_at"] = time.Now()
+
+	// Create snapshot after pausing
+	createPlanSnapshot(planID, "paused")
+
+	return map[string]any{
+		"status":    "plan_paused",
+		"plan_id":   planID,
+		"reason":    reason,
+		"paused_at": time.Now(),
+	}
+}
+
+func ResumePlan(data map[string]any) map[string]any {
+	planID, _ := data["plan_id"].(string)
+
+	if planID == "" {
+		return map[string]any{"error": "plan_id is required"}
+	}
+
+	plan, exists := plannerState.ActivePlans[planID]
+	if !exists {
+		return map[string]any{"error": "plan not found"}
+	}
+
+	if plan.Status != "paused" {
+		return map[string]any{"error": "plan is not paused"}
+	}
+
+	// Create snapshot before resuming
+	createPlanSnapshot(planID, "before_resume")
+
+	// Update plan status
+	plan.Status = "in_progress"
+	plan.UpdatedAt = time.Now()
+
+	// Update context
+	if plan.Context == nil {
+		plan.Context = make(map[string]any)
+	}
+	plan.Context["resumed_at"] = time.Now()
+	if pauseReason, exists := plan.Context["pause_reason"]; exists {
+		plan.Context["last_pause_reason"] = pauseReason
+		delete(plan.Context, "pause_reason")
+	}
+
+	// Create snapshot after resuming
+	createPlanSnapshot(planID, "resumed")
+
+	return map[string]any{
+		"status":     "plan_resumed",
+		"plan_id":    planID,
+		"resumed_at": time.Now(),
+		"progress":   calculatePlanProgress(plan),
+	}
+}
+
+func CancelPlan(data map[string]any) map[string]any {
+	planID, _ := data["plan_id"].(string)
+	reason, _ := data["reason"].(string)
+
+	if planID == "" {
+		return map[string]any{"error": "plan_id is required"}
+	}
+
+	plan, exists := plannerState.ActivePlans[planID]
+	if !exists {
+		return map[string]any{"error": "plan not found"}
+	}
+
+	if plan.Status == "cancelled" {
+		return map[string]any{"error": "plan is already cancelled"}
+	}
+
+	// Create snapshot before cancelling
+	createPlanSnapshot(planID, "before_cancel")
+
+	// Update plan status
+	plan.Status = "cancelled"
+	plan.UpdatedAt = time.Now()
+
+	// Update context
+	if plan.Context == nil {
+		plan.Context = make(map[string]any)
+	}
+	plan.Context["cancel_reason"] = reason
+	plan.Context["cancelled_at"] = time.Now()
+
+	// Mark all pending subtasks as cancelled
+	for i := range plan.Subtasks {
+		if plan.Subtasks[i].Status == "pending" || plan.Subtasks[i].Status == "in_progress" {
+			plan.Subtasks[i].Status = "cancelled"
+		}
+	}
+
+	// Update metrics
+	plannerState.Metrics.FailedPlans++
+
+	// Create snapshot after cancelling
+	createPlanSnapshot(planID, "cancelled")
+
+	return map[string]any{
+		"status":       "plan_cancelled",
+		"plan_id":      planID,
+		"reason":       reason,
+		"cancelled_at": time.Now(),
+		"progress":     calculatePlanProgress(plan),
+	}
+}
+
+func ClonePlan(data map[string]any) map[string]any {
+	sourcePlanID, _ := data["source_plan_id"].(string)
+	newPlanName, _ := data["new_plan_name"].(string)
+	modifications, _ := data["modifications"].(map[string]any)
+
+	if sourcePlanID == "" {
+		return map[string]any{"error": "source_plan_id is required"}
+	}
+
+	sourcePlan, exists := plannerState.ActivePlans[sourcePlanID]
+	if !exists {
+		return map[string]any{"error": "source plan not found"}
+	}
+
+	// Generate new plan ID
+	newPlanID := fmt.Sprintf("plan_%s", uuid.NewString())
+
+	// Clone the plan
+	clonedPlan := &ExecutionPlan{
+		ID:             newPlanID,
+		Overview:       sourcePlan.Overview,
+		Subtasks:       cloneSubtasks(sourcePlan.Subtasks, newPlanID),
+		RiskFactors:    make([]string, len(sourcePlan.RiskFactors)),
+		SuccessMetrics: sourcePlan.SuccessMetrics,
+		Dependencies:   make(map[string][]string),
+		Timeline:       cloneTimeline(sourcePlan.Timeline, newPlanID),
+		Resources:      make([]string, len(sourcePlan.Resources)),
+		Context:        copyMapSafe(sourcePlan.Context),
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+		Status:         "created",
+	}
+
+	// Copy slices
+	copy(clonedPlan.RiskFactors, sourcePlan.RiskFactors)
+	copy(clonedPlan.Resources, sourcePlan.Resources)
+
+	// Copy dependencies with new IDs
+	for oldID, deps := range sourcePlan.Dependencies {
+		newID := remapSubtaskID(oldID, sourcePlanID, newPlanID)
+		newDeps := make([]string, len(deps))
+		for i, dep := range deps {
+			newDeps[i] = remapSubtaskID(dep, sourcePlanID, newPlanID)
+		}
+		clonedPlan.Dependencies[newID] = newDeps
+	}
+
+	// Apply modifications
+	if modifications != nil {
+		applyPlanModifications(clonedPlan, modifications)
+	}
+
+	// Set name if provided
+	if newPlanName != "" {
+		if clonedPlan.Context == nil {
+			clonedPlan.Context = make(map[string]any)
+		}
+		clonedPlan.Context["plan_name"] = newPlanName
+	}
+
+	// Add clone metadata
+	clonedPlan.Context["cloned_from"] = sourcePlanID
+	clonedPlan.Context["cloned_at"] = time.Now()
+
+	// Store cloned plan
+	plannerState.ActivePlans[newPlanID] = clonedPlan
+	plannerState.Metrics.TotalPlansCreated++
+
+	return map[string]any{
+		"status":         "plan_cloned",
+		"source_plan_id": sourcePlanID,
+		"new_plan_id":    newPlanID,
+		"new_plan_name":  newPlanName,
+		"subtask_count":  len(clonedPlan.Subtasks),
+		"cloned_at":      time.Now(),
+	}
+}
+
+// Helper functions for plan lifecycle management
+func calculateSuccessRate(metrics *PlannerMetrics) float64 {
+	total := metrics.CompletedPlans + metrics.FailedPlans
+	if total == 0 {
+		return 0.0
+	}
+	return float64(metrics.CompletedPlans) / float64(total)
+}
+
+func cloneSubtasks(originalSubtasks []SubTask, newPlanID string) []SubTask {
+	cloned := make([]SubTask, len(originalSubtasks))
+
+	for i, original := range originalSubtasks {
+		cloned[i] = SubTask{
+			ID:                  remapSubtaskID(original.ID, "", newPlanID),
+			Description:         original.Description,
+			RequiredAgent:       original.RequiredAgent,
+			Priority:            original.Priority,
+			Dependencies:        cloneAndRemapDependencies(original.Dependencies, newPlanID),
+			EstimatedComplexity: original.EstimatedComplexity,
+			Tools:               make([]string, len(original.Tools)),
+			AcceptanceCriteria:  original.AcceptanceCriteria,
+			Status:              "pending", // Reset status for new plan
+			Context:             copyMapSafe(original.Context),
+			EstimatedDuration:   original.EstimatedDuration,
+		}
+		copy(cloned[i].Tools, original.Tools)
+	}
+
+	return cloned
+}
+
+func cloneTimeline(originalTimeline *PlanTimeline, newPlanID string) *PlanTimeline {
+	if originalTimeline == nil {
+		return nil
+	}
+
+	cloned := &PlanTimeline{
+		StartDate:    time.Now(), // Reset start date for new plan
+		EndDate:      time.Now().Add(originalTimeline.EndDate.Sub(originalTimeline.StartDate)),
+		Milestones:   make([]Milestone, len(originalTimeline.Milestones)),
+		CriticalPath: cloneAndRemapDependencies(originalTimeline.CriticalPath, newPlanID),
+		Dependencies: make(map[string][]string),
+	}
+
+	// Clone milestones
+	for i, milestone := range originalTimeline.Milestones {
+		cloned.Milestones[i] = Milestone{
+			ID:          remapSubtaskID(milestone.ID, "", newPlanID),
+			Name:        milestone.Name,
+			Date:        cloned.StartDate.Add(milestone.Date.Sub(originalTimeline.StartDate)),
+			Description: milestone.Description,
+			Status:      "pending", // Reset status
+		}
+	}
+
+	// Clone dependencies
+	for oldID, deps := range originalTimeline.Dependencies {
+		newID := remapSubtaskID(oldID, "", newPlanID)
+		cloned.Dependencies[newID] = cloneAndRemapDependencies(deps, newPlanID)
+	}
+
+	return cloned
+}
+
+func cloneAndRemapDependencies(deps []string, newPlanID string) []string {
+	if deps == nil {
+		return nil
+	}
+
+	remapped := make([]string, len(deps))
+	for i, dep := range deps {
+		remapped[i] = remapSubtaskID(dep, "", newPlanID)
+	}
+	return remapped
+}
+
+func remapSubtaskID(oldID, oldPlanID, newPlanID string) string {
+	// Simple ID remapping strategy
+	if strings.Contains(oldID, oldPlanID) {
+		return strings.Replace(oldID, oldPlanID, newPlanID, 1)
+	}
+	// If no plan ID in the subtask ID, append new plan ID
+	return fmt.Sprintf("%s_%s", newPlanID, oldID)
+}
+
+func applyPlanModifications(plan *ExecutionPlan, modifications map[string]any) {
+	if overview, ok := modifications["overview"].(string); ok {
+		plan.Overview = overview
+	}
+
+	if successMetrics, ok := modifications["success_metrics"].(string); ok {
+		plan.SuccessMetrics = successMetrics
+	}
+
+	if riskFactors, ok := modifications["risk_factors"].([]any); ok {
+		plan.RiskFactors = convertToStringSlice(riskFactors)
+	}
+
+	if resources, ok := modifications["resources"].([]any); ok {
+		plan.Resources = convertToStringSlice(resources)
+	}
+
+	// Apply subtask modifications
+	if subtaskMods, ok := modifications["subtask_modifications"].([]any); ok {
+		applySubtaskModifications(plan, subtaskMods)
+	}
+}
+
+func applySubtaskModifications(plan *ExecutionPlan, modifications []any) {
+	for _, modInterface := range modifications {
+		if mod, ok := modInterface.(map[string]any); ok {
+			subtaskID := getStringFromMapSafe(mod, "subtask_id", "")
+
+			for i := range plan.Subtasks {
+				if plan.Subtasks[i].ID == subtaskID {
+					if desc, ok := mod["description"].(string); ok {
+						plan.Subtasks[i].Description = desc
+					}
+					if priority, ok := mod["priority"].(string); ok {
+						plan.Subtasks[i].Priority = priority
+					}
+					if complexity, ok := mod["estimated_complexity"].(string); ok {
+						plan.Subtasks[i].EstimatedComplexity = complexity
+					}
+					break
+				}
+			}
+		}
+	}
+}
+
+// --------------------------- Helper Functions ---------------------------
 
 func GetPlannerCapabilities() []repository.Function {
 	return EnhancedPlannerCapabilities
@@ -3203,4 +3210,116 @@ func GetPlannerCapabilitiesMap() map[string]repository.Function {
 		plannerMap[v.Name] = v
 	}
 	return plannerMap
+}
+
+// C Programming specific task generation
+func generateCProgrammingSubtasks(taskDescription string, analysis TaskAnalysis) []SubTask {
+	subtasks := make([]SubTask, 0)
+	
+	// Extract module name from description
+	moduleName := extractModuleName(taskDescription)
+	if moduleName == "" {
+		moduleName = "utils"
+	}
+	
+	// Task 1: Create header and implementation files together
+	headerTask := SubTask{
+		ID:                  fmt.Sprintf("task_%s_header_impl_%s", moduleName, uuid.NewString()[:8]),
+		Description:         fmt.Sprintf("Create %s.h header file with function declarations AND %s.c implementation file with complete working function bodies (not stubs). All functions declared in the header must have corresponding complete implementations.", moduleName, moduleName),
+		RequiredAgent:       "coder",
+		Priority:           "high",
+		Dependencies:       []string{},
+		EstimatedComplexity: "medium",
+		Tools:              []string{fmt.Sprintf("%s.h", moduleName), fmt.Sprintf("%s.c", moduleName)},
+		AcceptanceCriteria:  fmt.Sprintf("Both %s.h and %s.c files created with complete function implementations", moduleName, moduleName),
+		Status:             "pending",
+		Context:            map[string]any{"module_name": moduleName, "language": "c", "requires_implementation": true},
+	}
+	subtasks = append(subtasks, headerTask)
+	
+	// Task 2: Create main.c with demonstration
+	mainTask := SubTask{
+		ID:                  fmt.Sprintf("task_main_%s", uuid.NewString()[:8]),
+		Description:         fmt.Sprintf("Create main.c with complete main() function that demonstrates and tests all functionality from %s.h", moduleName),
+		RequiredAgent:       "coder",
+		Priority:           "medium",
+		Dependencies:       []string{headerTask.ID},
+		EstimatedComplexity: "low",
+		Tools:              []string{"main.c"},
+		AcceptanceCriteria:  "main.c created with working demonstration of all functions",
+		Status:             "pending",
+		Context:            map[string]any{"demonstrates": moduleName, "language": "c"},
+	}
+	subtasks = append(subtasks, mainTask)
+	
+	// Task 3: Compile and test
+	testTask := SubTask{
+		ID:                  fmt.Sprintf("task_test_%s", uuid.NewString()[:8]),
+		Description:         "Compile and test the C program to ensure it works correctly",
+		RequiredAgent:       "coder",
+		Priority:           "high",
+		Dependencies:       []string{mainTask.ID},
+		EstimatedComplexity: "low",
+		Tools:              []string{"gcc"},
+		AcceptanceCriteria:  "Program compiles without errors and runs successfully",
+		Status:             "pending",
+		Context:            map[string]any{"action": "compile_test", "language": "c"},
+	}
+	subtasks = append(subtasks, testTask)
+	
+	return subtasks
+}
+
+// Extract module name from task description
+func extractModuleName(description string) string {
+	desc := strings.ToLower(description)
+	
+	// Common patterns for module names
+	patterns := []string{
+		"math", "calculator", "string", "utils", "geometry", "physics",
+		"sorting", "search", "data", "file", "network", "crypto",
+	}
+	
+	for _, pattern := range patterns {
+		if strings.Contains(desc, pattern) {
+			return pattern
+		}
+	}
+	
+	// Default fallback
+	return "utils"
+}
+
+// Convert subtasks to the expected task format for orchestrator
+func convertSubtasksToTaskFormat(subtasks []SubTask) []map[string]any {
+	tasks := make([]map[string]any, 0)
+	for _, subtask := range subtasks {
+		tasks = append(tasks, map[string]any{
+			"task_id":       subtask.ID,
+			"description":   subtask.Description,
+			"required_files": subtask.Tools,
+			"dependencies":  subtask.Dependencies,
+			"agent_type":    subtask.RequiredAgent,
+			"priority":      convertPriorityToInt(subtask.Priority),
+		})
+	}
+	return tasks
+}
+
+// Convert priority string to integer
+func convertPriorityToInt(priority string) int {
+	switch strings.ToLower(priority) {
+	case "critical":
+		return 5
+	case "high":
+		return 4
+	case "medium":
+		return 3
+	case "low":
+		return 2
+	case "very_low":
+		return 1
+	default:
+		return 3
+	}
 }
