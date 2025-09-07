@@ -201,7 +201,7 @@ func AskAnAgent(args map[string]any) map[string]any {
 		anaAgent := analysis.AgentAnalysis{}
 		anaAgent.NewAgent()
 		query := map[string]any{
-			"query": fmt.Sprintf("Here is the Task run an analysis for this task %s, Don't assume anything ask the user for any clearence you want. Don't hallucinate!", task),
+			"query": fmt.Sprintf("Here is the Task run an analysis for this task: \" %s\", Don't assume anything ask the user for any clearence you want. Don't hallucinate!", task),
 		}
 		fmt.Println(query["query"])
 		analysisOutPut := anaAgent.Interaction(query)["analysis-id"]
