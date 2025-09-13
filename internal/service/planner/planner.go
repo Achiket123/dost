@@ -270,7 +270,7 @@ func (p *PlannerAgent) RequestAgent(contents []map[string]any) map[string]any {
 			if part.Text != "" {
 				// REJECT TEXT RESPONSES - Force function-only responses
 				newResponse = append(newResponse, map[string]any{
-					"error": "Text responses not allowed. Must use function calls only.",
+					"error":         "Text responses not allowed. Must use function calls only.",
 					"rejected_text": part.Text,
 				})
 			} else if part.FunctionCall != nil && part.FunctionCall.Name != "" {
@@ -294,7 +294,7 @@ func (p *PlannerAgent) RequestAgent(contents []map[string]any) map[string]any {
 	// If no valid function calls, return error
 	if len(newResponse) == 0 {
 		return map[string]any{
-			"error": "No function calls received. Planner must respond with function calls only.",
+			"error":  "No function calls received. Planner must respond with function calls only.",
 			"output": nil,
 		}
 	}
@@ -2433,7 +2433,7 @@ var EnhancedPlannerCapabilities = []repository.Function{
 							Type:        "array",
 							Description: "Array of subtask objects",
 							Items: &repository.Properties{
-								Type: "object",
+								Type:        "object",
 								Description: "Individual subtask definition",
 							},
 						},
@@ -2441,7 +2441,7 @@ var EnhancedPlannerCapabilities = []repository.Function{
 							Type:        "array",
 							Description: "Array of identified risk factors",
 							Items: &repository.Properties{
-								Type: "string",
+								Type:        "string",
 								Description: "Individual risk factor",
 							},
 						},
@@ -2508,7 +2508,7 @@ var EnhancedPlannerCapabilities = []repository.Function{
 					Type:        "array",
 					Description: "Optional: Array of workflow step definitions.",
 					Items: &repository.Properties{
-						Type: "object",
+						Type:        "object",
 						Description: "Individual workflow step",
 					},
 				},
@@ -2556,7 +2556,7 @@ var EnhancedPlannerCapabilities = []repository.Function{
 					Type:        "array",
 					Description: "Optional: Array of available agent capabilities.",
 					Items: &repository.Properties{
-						Type: "string",
+						Type:        "string",
 						Description: "Individual agent capability",
 					},
 				},
@@ -3215,77 +3215,77 @@ func GetPlannerCapabilitiesMap() map[string]repository.Function {
 // C Programming specific task generation
 func generateCProgrammingSubtasks(taskDescription string, analysis TaskAnalysis) []SubTask {
 	subtasks := make([]SubTask, 0)
-	
+
 	// Extract module name from description
 	moduleName := extractModuleName(taskDescription)
 	if moduleName == "" {
 		moduleName = "utils"
 	}
-	
+
 	// Task 1: Create header and implementation files together
 	headerTask := SubTask{
 		ID:                  fmt.Sprintf("task_%s_header_impl_%s", moduleName, uuid.NewString()[:8]),
 		Description:         fmt.Sprintf("Create %s.h header file with function declarations AND %s.c implementation file with complete working function bodies (not stubs). All functions declared in the header must have corresponding complete implementations.", moduleName, moduleName),
 		RequiredAgent:       "coder",
-		Priority:           "high",
-		Dependencies:       []string{},
+		Priority:            "high",
+		Dependencies:        []string{},
 		EstimatedComplexity: "medium",
-		Tools:              []string{fmt.Sprintf("%s.h", moduleName), fmt.Sprintf("%s.c", moduleName)},
+		Tools:               []string{fmt.Sprintf("%s.h", moduleName), fmt.Sprintf("%s.c", moduleName)},
 		AcceptanceCriteria:  fmt.Sprintf("Both %s.h and %s.c files created with complete function implementations", moduleName, moduleName),
-		Status:             "pending",
-		Context:            map[string]any{"module_name": moduleName, "language": "c", "requires_implementation": true},
+		Status:              "pending",
+		Context:             map[string]any{"module_name": moduleName, "language": "c", "requires_implementation": true},
 	}
 	subtasks = append(subtasks, headerTask)
-	
+
 	// Task 2: Create main.c with demonstration
 	mainTask := SubTask{
 		ID:                  fmt.Sprintf("task_main_%s", uuid.NewString()[:8]),
 		Description:         fmt.Sprintf("Create main.c with complete main() function that demonstrates and tests all functionality from %s.h", moduleName),
 		RequiredAgent:       "coder",
-		Priority:           "medium",
-		Dependencies:       []string{headerTask.ID},
+		Priority:            "medium",
+		Dependencies:        []string{headerTask.ID},
 		EstimatedComplexity: "low",
-		Tools:              []string{"main.c"},
+		Tools:               []string{"main.c"},
 		AcceptanceCriteria:  "main.c created with working demonstration of all functions",
-		Status:             "pending",
-		Context:            map[string]any{"demonstrates": moduleName, "language": "c"},
+		Status:              "pending",
+		Context:             map[string]any{"demonstrates": moduleName, "language": "c"},
 	}
 	subtasks = append(subtasks, mainTask)
-	
+
 	// Task 3: Compile and test
 	testTask := SubTask{
 		ID:                  fmt.Sprintf("task_test_%s", uuid.NewString()[:8]),
 		Description:         "Compile and test the C program to ensure it works correctly",
 		RequiredAgent:       "coder",
-		Priority:           "high",
-		Dependencies:       []string{mainTask.ID},
+		Priority:            "high",
+		Dependencies:        []string{mainTask.ID},
 		EstimatedComplexity: "low",
-		Tools:              []string{"gcc"},
+		Tools:               []string{"gcc"},
 		AcceptanceCriteria:  "Program compiles without errors and runs successfully",
-		Status:             "pending",
-		Context:            map[string]any{"action": "compile_test", "language": "c"},
+		Status:              "pending",
+		Context:             map[string]any{"action": "compile_test", "language": "c"},
 	}
 	subtasks = append(subtasks, testTask)
-	
+
 	return subtasks
 }
 
 // Extract module name from task description
 func extractModuleName(description string) string {
 	desc := strings.ToLower(description)
-	
+
 	// Common patterns for module names
 	patterns := []string{
 		"math", "calculator", "string", "utils", "geometry", "physics",
 		"sorting", "search", "data", "file", "network", "crypto",
 	}
-	
+
 	for _, pattern := range patterns {
 		if strings.Contains(desc, pattern) {
 			return pattern
 		}
 	}
-	
+
 	// Default fallback
 	return "utils"
 }
@@ -3295,12 +3295,12 @@ func convertSubtasksToTaskFormat(subtasks []SubTask) []map[string]any {
 	tasks := make([]map[string]any, 0)
 	for _, subtask := range subtasks {
 		tasks = append(tasks, map[string]any{
-			"task_id":       subtask.ID,
-			"description":   subtask.Description,
+			"task_id":        subtask.ID,
+			"description":    subtask.Description,
 			"required_files": subtask.Tools,
-			"dependencies":  subtask.Dependencies,
-			"agent_type":    subtask.RequiredAgent,
-			"priority":      convertPriorityToInt(subtask.Priority),
+			"dependencies":   subtask.Dependencies,
+			"agent_type":     subtask.RequiredAgent,
+			"priority":       convertPriorityToInt(subtask.Priority),
 		})
 	}
 	return tasks

@@ -1,6 +1,7 @@
 package coder
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"dost/internal/repository"
@@ -9,9 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,76 +18,148 @@ import (
 	"github.com/spf13/viper"
 )
 
-// CoderAgent is an autonomous agent specialized in code generation, analysis, and execution.
-type CoderAgent repository.Agent
+// Coder capabilities definitions.
+const (
+	CreateFileFromName   = "create_file"
+	ReadFileFromName     = "read_file"
+	ListDirectoryName    = "list_directory"
+	DeleteFileOrDirName  = "delete_file_or_dir"
+	EditFileFromName     = "edit_file"
+	RequestUserInputName = "request_user_input"
+)
 
-// coderName defines the name of the coder agent
+const CreateFileDescription = "Creates a new file at a specified path with the given content. Overwrites if the file exists."
+const ReadFileDescription = "Reads the content of a file from a specified path."
+const ListDirectoryDescription = "Lists all files and subdirectories in a given directory path."
+const DeleteFileOrDirDescription = "Deletes a file or directory at the specified path."
+const EditFileDescription = "Edits a file at a given path by applying a specified change or replacement to its content."
+const RequestUserInputDescription = "Prompts the user for a single line of input from the terminal and returns the response."
+
+var ChatHistory = make([]map[string]any, 0)
+var CodertoolsFunc map[string]repository.Function = make(map[string]repository.Function)
+
+type AgentCoder repository.Agent
+
 const coderName = "coder"
 
-// coderVersion defines the version of the coder agent
 const coderVersion = "0.1.0"
 
-// CoderInstructions provides the system instructions for the coder agent's LLM.
-const CoderInstructions = `You are a highly skilled and resourceful coder agent. Your primary function is to write, debug, and refactor code, as well as to analyze technical specifications and produce high-quality, executable code.
+// File Handling Structures
+type Piece struct {
+	Buffer string // "original" or "add"
+	Start  int
+	Length int
+}
 
-## CRITICAL: FUNCTION-ONLY RESPONSES
-**YOU MUST ONLY RESPOND WITH FUNCTION CALLS. NO TEXT RESPONSES ALLOWED.**
-**NEVER return plain text, code blocks, or explanations directly.**
-**ALL communication must be through the provided function capabilities.**
+type PieceTable struct {
+	Original string  // immutable original buffer
+	Add      string  // append-only buffer
+	Pieces   []Piece // sequence of text slices
+}
 
-Your core responsibilities include:
-1. Use create_file function to write complete code files
-2. Use execute_code function to test implementations  
-3. Use read_file function to analyze existing code
-4. Use edit_file function to modify code
-5. Use analyze_code function to review implementations
-6. Use debug_code function to fix issues
-7. **Tool Usage**: You **must** use these functions when the task requires interaction with the file system
+// args must and only contains "query"
+func (p *AgentCoder) Interaction(args map[string]any) map[string]any {
+	ChatHistory = append(ChatHistory, map[string]any{
+		"role": "user",
+		"parts": []map[string]any{
+			{
+				"text": args["query"],
+			},
+		},
+	})
 
-## Available Functions (Use Exclusively)
-- create_file: Create new files with complete content
-- read_file: Read existing files
-- edit_file: Modify existing files
-- execute_code: Run and test code
-- analyze_code: Analyze code quality
-- debug_code: Fix code issues
-- list_directory: Explore file structure
-- create_directory: Create directories
-- delete_file_or_dir: Remove files/directories
-- refactor_code: Improve code structure
-- generate_tests: Create test cases
+	for {
+		// fmt.Println("Current ChatHistory:", ChatHistory)
+		if ChatHistory[len(ChatHistory)-1]["role"] == "model" {
+			ChatHistory = append(ChatHistory, map[string]any{
+				"role": "user",
+				"parts": map[string]any{
+					"text": "If you feel there is not task left and nothing to do , call exit-process. Because only that can stop you and finish the program. Don't Respond with text , No text output should be there , call the exit-process. PERIOD",
+				},
+			})
+		}
+		output := p.RequestAgent(ChatHistory)
 
-**CRITICAL: C Programming Language Requirements**
-For C programming tasks, you MUST provide COMPLETE implementations:
+		if output["error"] != nil {
+			fmt.Println("Error:", output["error"])
+			os.Exit(1)
+		}
+		fmt.Println(output)
+		outputData, ok := output["output"].([]map[string]any)
+		if !ok {
+			fmt.Println("ERROR CONVERTING OUTPUT")
+			return nil
+		}
 
-1. **Never Create Stub Functions**: All function declarations in .h files MUST have corresponding complete implementations in .c files
-2. **Complete Function Bodies**: Every function must contain working code, not TODO comments or empty bodies  
-3. **Header-Implementation Pairs**: For every .h file created, create the corresponding .c file with full implementations
-4. **Working Main Function**: Always provide a main.c with a complete main() function that demonstrates the functionality
-5. **Proper Includes**: Use correct #include directives and library dependencies
-6. **Compilation Ready**: Code must compile with gcc without errors
+		if len(outputData) == 0 {
+			fmt.Println("No output received")
+			continue
+		}
 
-**C Implementation Example Process**:
-For creating "math_utils.h":
-1. Use create_file with path="math_utils.h" and complete header declarations
-2. Use create_file with path="math_utils.c" and COMPLETE function implementations (never stubs)
-3. Use create_file with path="main.c" that uses and tests the functions
-4. Use execute_code to test the implementation
+		// Process each output part
+		for _, part := range outputData {
+			partType, hasType := part["type"].(string)
+			if !hasType {
+				continue
+			}
 
-## Function Usage Rules
-1. **MANDATORY**: Every response must be a function call
-2. **NO CODE BLOCKS**: Never return  code  blocks directly  
-3. **COMPLETE IMPLEMENTATIONS**: Always provide working code, never stubs
-4. **TEST YOUR CODE**: Use execute_code after creating files
-5. **HANDLE ERRORS**: Use debug_code if execution fails
+			if partType == "text" {
+				// Handle text response
+				if text, ok := part["data"].(string); ok {
+					fmt.Println("Agent:", text)
+				}
+			} else if partType == "functionCall" {
+				// Handle function call
+				name, nameOK := part["name"].(string)
+				argsData, argsOK := part["args"].(map[string]any)
 
-You must always strive to produce clean, efficient, and well-commented code. When writing code, assume a modern development environment unless specified otherwise. Before returning a code solution, you should consider edge cases, potential errors, and best practices.
+				if !nameOK || !argsOK {
+					fmt.Println("Error: invalid function call data")
+					continue
+				}
 
-When a user provides a coding task, your **first and foremost** action should be to determine what functions to call. Use create_file for new files, execute_code for testing, and other functions as needed. Do not generate text describing what you will do; simply call the appropriate functions directly.`
+				fmt.Println("Calling function:", name)
 
-// NewAgent creates and initializes a new CoderAgent instance.
-func (c *CoderAgent) NewAgent() *CoderAgent {
-	model := viper.GetString("ORCHESTRATOR.MODEL")
+				// Execute the function
+				if function, exists := CodertoolsFunc[name]; exists {
+					result := function.Run(argsData)
+					fmt.Println("CODERAGENT", result)
+					if _, ok = result["exit"].(bool); ok {
+						return map[string]any{"coder-id": result["output"]}
+					}
+					// Add function response to chat history
+					ChatHistory = append(ChatHistory, map[string]any{
+						"role": "user",
+						"parts": []map[string]any{
+							{
+								"functionResponse": map[string]any{
+									"name":     name,
+									"response": result,
+								},
+							},
+						},
+					})
+
+					// Display result if it's a string
+					if outputStr, ok := result["output"].(string); ok {
+						fmt.Println("Result:", outputStr)
+					}
+				} else {
+					fmt.Printf("Function %s not found\n", name)
+					break
+
+				}
+			}
+		}
+
+		// Continue the conversation loop
+		fmt.Println("---")
+	}
+}
+
+// NewAgent creates and initializes a new AgentCoder instance.
+func (c *AgentCoder) NewAgent() {
+	model := viper.GetString("CODER.MODEL")
 	if model == "" {
 		model = "gemini-1.5-pro"
 	}
@@ -110,22 +181,24 @@ func (c *CoderAgent) NewAgent() *CoderAgent {
 		LastActive:     time.Now(),
 	}
 
-	agent := repository.Agent{
-		Metadata:     agentMetadata,
-		Capabilities: GetCoderCapabilities(),
-	}
-	coderAgent := CoderAgent(agent)
-	return &coderAgent
+	c.Metadata = agentMetadata
+	c.Capabilities = CoderCapabilities
+
 }
 
-// RequestAgent is the main entry point for the CoderAgent to handle incoming tasks.
-func (c *CoderAgent) RequestAgent(contents []map[string]any) map[string]any {
+// RequestAgent is the main entry point for the AgentCoder to handle incoming tasks.
+func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 	fmt.Printf("Processing request with Coder Agent: %s\n", c.Metadata.Name)
 
 	request := map[string]any{
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{
 				{"text": c.Metadata.Instructions},
+			},
+		},
+		"toolConfig": map[string]any{
+			"functionCallingConfig": map[string]any{
+				"mode": "ANY", // Changed from "FORCE_CALLS" string to proper object
 			},
 		},
 		"contents": contents,
@@ -159,6 +232,8 @@ func (c *CoderAgent) RequestAgent(contents []map[string]any) map[string]any {
 	}
 	defer resp.Body.Close()
 
+	fmt.Println("HELLO 21")
+
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return map[string]any{
@@ -177,48 +252,62 @@ func (c *CoderAgent) RequestAgent(contents []map[string]any) map[string]any {
 		return map[string]any{"error": err.Error(), "output": nil}
 	}
 
-	newResponse := make([]map[string]any, 0)
-	for _, candidate := range response.Candidates {
-		for _, part := range candidate.Content.Parts {
-			if part.Text != "" {
-				// REJECT TEXT RESPONSES - Force function-only responses
-				newResponse = append(newResponse, map[string]any{
-					"error": "Text responses not allowed. Must use function calls only.",
-					"rejected_text": part.Text,
-				})
+	// Extract both text and function calls (like analysis agent)
+	output := []map[string]any{}
 
-			} else if part.FunctionCall != nil && part.FunctionCall.Name != "" {
-				if funcResult := c.executeCoderFunction(part.FunctionCall.Name, part.FunctionCall.Args); funcResult != nil {
-					newResponse = append(newResponse, map[string]any{
-						"function_name": part.FunctionCall.Name,
-						"parameters":    part.FunctionCall.Args,
-						"result":        funcResult,
-					})
-				} else {
-					newResponse = append(newResponse, map[string]any{
-						"function_name": part.FunctionCall.Name,
-						"parameters":    part.FunctionCall.Args,
-					})
-				}
+	for _, cand := range response.Candidates {
+		for _, part := range cand.Content.Parts {
+			if part.Text != "" {
+				output = append(output, map[string]any{
+					"type": "text",
+					"data": part.Text,
+				})
 			}
+			if part.FunctionCall != nil {
+				output = append(output, map[string]any{
+					"type": "functionCall",
+					"name": part.FunctionCall.Name,
+					"args": part.FunctionCall.Args,
+				})
+			}
+		}
+	}
+
+	// Add the model's response to chat history (like analysis agent)
+	if len(response.Candidates) > 0 && len(response.Candidates[0].Content.Parts) > 0 {
+		parts := []map[string]any{}
+
+		for _, part := range response.Candidates[0].Content.Parts {
+			if part.Text != "" {
+				parts = append(parts, map[string]any{
+					"text": part.Text,
+				})
+			}
+			if part.FunctionCall != nil {
+				parts = append(parts, map[string]any{
+					"functionCall": map[string]any{
+						"name": part.FunctionCall.Name,
+						"args": part.FunctionCall.Args,
+					},
+				})
+			}
+		}
+
+		if len(parts) > 0 {
+			ChatHistory = append(ChatHistory, map[string]any{
+				"role":  response.Candidates[0].Content.Role,
+				"parts": parts,
+			})
 		}
 	}
 
 	c.Metadata.LastActive = time.Now()
 
-	// If no valid function calls, return error
-	if len(newResponse) == 0 {
-		return map[string]any{
-			"error": "No function calls received. Coder must respond with function calls only.",
-			"output": nil,
-		}
-	}
-
-	return map[string]any{"error": nil, "output": newResponse}
+	return map[string]any{"error": nil, "output": output}
 }
 
 // executeCoderFunction executes a coder capability based on the function name.
-func (c *CoderAgent) executeCoderFunction(funcName string, args map[string]any) map[string]any {
+func (c *AgentCoder) executeCoderFunction(funcName string, args map[string]any) map[string]any {
 	capabilities := GetCoderCapabilitiesMap()
 	if capability, exists := capabilities[funcName]; exists {
 		return capability.Service(args)
@@ -226,454 +315,240 @@ func (c *CoderAgent) executeCoderFunction(funcName string, args map[string]any) 
 	return nil
 }
 
-// ToMap serializes the CoderAgent into a map.
-func (c *CoderAgent) ToMap() map[string]any {
+// ToMap serializes the AgentCoder into a map.
+func (c *AgentCoder) ToMap() map[string]any {
 	agent := repository.Agent(*c)
 	return agent.ToMap()
 }
 
-// GetCoderMap creates a map representation of the coder agent for external use.
-func GetCoderMap() map[string]any {
-	var cagent CoderAgent
-	agent := cagent.NewAgent()
-	capsJSON, _ := json.Marshal(agent.Capabilities)
-	var caps []map[string]any
-	json.Unmarshal(capsJSON, &caps)
-	return map[string]any{
-		"agent":        coderName,
-		"metadata":     agent.Metadata,
-		"capabilities": caps,
-	}
-}
-
-// Coder capabilities definitions.
-const (
-	ExecuteCodeName      = "execute_code"
-	CreateFileFromName   = "create_file"
-	ReadFileFromName     = "read_file"
-	ListDirectoryName    = "list_directory"
-	AnalyzeCodeName      = "analyze_code"
-	DebugCodeName        = "debug_code"
-	RefactorCodeName     = "refactor_code"
-	GenerateTestsName    = "generate_tests"
-	CreateDirectoryName  = "create_directory"
-	DeleteFileOrDirName  = "delete_file_or_dir"
-	EditFileFromName     = "edit_file"
-	RequestUserInputName = "request_user_input"
-)
-
-const ExecuteCodeDescription = "Executes a given code snippet in a specified language and returns the output or error."
-const CreateFileDescription = "Creates a new file at a specified path with the given content. Overwrites if the file exists."
-const ReadFileDescription = "Reads the content of a file from a specified path."
-const ListDirectoryDescription = "Lists all files and subdirectories in a given directory path."
-const AnalyzeCodeDescription = "Analyzes a code snippet to identify potential issues, best practices, or provide an explanation."
-const DebugCodeDescription = "Identifies and fixes bugs in a given code snippet or file."
-const RefactorCodeDescription = "Refactors a code snippet to improve its structure and readability without changing its functionality."
-const GenerateTestsDescription = "Generates unit tests for a given function or code block."
-const CreateDirectoryDescription = "Creates a new directory at the specified path."
-const DeleteFileOrDirDescription = "Deletes a file or directory at the specified path."
-const EditFileDescription = "Edits a file at a given path by applying a specified change or replacement to its content."
-const RequestUserInputDescription = "Prompts the user for a single line of input from the terminal and returns the response."
-
-var CoderCapabilities = []repository.Function{
-	{
-		Name:        ExecuteCodeName,
-		Description: ExecuteCodeDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"code": {
-					Type:        "string",
-					Description: "The code snippet to execute.",
-				},
-				"language": {
-					Type:        "string",
-					Description: "The programming language of the code.",
-					Enum:        []string{"python", "go", "javascript", "bash", "java", "c"},
-				},
-				"dependencies": {
-					Type:        "array",
-					Description: "A list of dependencies to install before running the code.",
-					Items:       &repository.Properties{Type: "string"},
-				},
-				"filename": {
-					Type:        "string",
-					Description: "The name of the file to save the code to before execution.",
-				},
-			},
-			Required: []string{"code", "language"},
-		},
-		Service: ExecuteCode,
-	},
-	{
-		Name:        CreateFileFromName,
-		Description: CreateFileDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"path": {
-					Type:        "string",
-					Description: "The path of the file to create.",
-				},
-				"content": {
-					Type:        "string",
-					Description: "The content to write to the file.",
-				},
-			},
-			Required: []string{"path", "content"},
-		},
-		Service: CreateFile,
-	},
-	{
-		Name:        ReadFileFromName,
-		Description: ReadFileDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"path": {
-					Type:        "string",
-					Description: "The path of the file to read.",
-				},
-			},
-			Required: []string{"path"},
-		},
-		Service: ReadFile,
-	},
-	{
-		Name:        ListDirectoryName,
-		Description: ListDirectoryDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"path": {
-					Type:        "string",
-					Description: "The path of the directory to list.",
-				},
-			},
-			Required: []string{"path"},
-		},
-		Service: ListDirectory,
-	},
-	{
-		Name:        AnalyzeCodeName,
-		Description: AnalyzeCodeDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"code": {
-					Type:        "string",
-					Description: "The code snippet to analyze.",
-				},
-				"language": {
-					Type:        "string",
-					Description: "The language of the code.",
-				},
-			},
-			Required: []string{"code", "language"},
-		},
-		Service: AnalyzeCode,
-	},
-	{
-		Name:        DebugCodeName,
-		Description: DebugCodeDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"code": {
-					Type:        "string",
-					Description: "The code snippet to debug.",
-				},
-				"language": {
-					Type:        "string",
-					Description: "The language of the code.",
-				},
-				"error_message": {
-					Type:        "string",
-					Description: "The error message received from execution.",
-				},
-			},
-			Required: []string{"code", "language"},
-		},
-		Service: DebugCode,
-	},
-	{
-		Name:        RefactorCodeName,
-		Description: RefactorCodeDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"code": {
-					Type:        "string",
-					Description: "The code snippet to refactor.",
-				},
-				"reason": {
-					Type:        "string",
-					Description: "The reason for refactoring.",
-				},
-			},
-			Required: []string{"code", "reason"},
-		},
-		Service: RefactorCode,
-	},
-	{
-		Name:        GenerateTestsName,
-		Description: GenerateTestsDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"code": {
-					Type:        "string",
-					Description: "The code snippet for which to generate tests.",
-				},
-				"language": {
-					Type:        "string",
-					Description: "The language of the code.",
-				},
-			},
-			Required: []string{"code", "language"},
-		},
-		Service: GenerateTests,
-	},
-	{
-		Name:        CreateDirectoryName,
-		Description: CreateDirectoryDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"path": {
-					Type:        "string",
-					Description: "The path of the directory to create.",
-				},
-			},
-			Required: []string{"path"},
-		},
-		Service: CreateDirectory,
-	},
-	{
-		Name:        DeleteFileOrDirName,
-		Description: DeleteFileOrDirDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"path": {
-					Type:        "string",
-					Description: "The path of the file or directory to delete.",
-				},
-			},
-			Required: []string{"path"},
-		},
-		Service: DeleteFileOrDir,
-	},
-	{
-		Name:        EditFileFromName,
-		Description: EditFileDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"path": {
-					Type:        "string",
-					Description: "The path of the file to edit.",
-				},
-				"changes": {
-					Type:        "string",
-					Description: "The content to replace in the file, or a full new content.",
-				},
-			},
-			Required: []string{"path", "changes"},
-		},
-		Service: EditFile,
-	},
-	{
-		Name:        RequestUserInputName,
-		Description: RequestUserInputDescription,
-		Parameters: repository.Parameters{
-			Type: "object",
-			Properties: map[string]*repository.Properties{
-				"prompt": {
-					Type:        "string",
-					Description: "The message to display to the user when requesting input.",
-				},
-			},
-			Required: []string{"prompt"},
-		},
-		Service: func(data map[string]any) map[string]any {
-			return nil
-		},
-	},
-}
-
-// GetCoderCapabilities returns the list of all capabilities for the CoderAgent.
-func GetCoderCapabilities() []repository.Function {
-	return CoderCapabilities
-}
-
-// GetCoderCapabilitiesArrayMap returns the capabilities as a list of maps for API use.
-func GetCoderCapabilitiesArrayMap() []map[string]any {
-	coderMap := make([]map[string]any, 0)
-	for _, v := range CoderCapabilities {
-		coderMap = append(coderMap, v.ToObject())
-	}
-	return coderMap
-}
-
-// GetCoderCapabilitiesMap returns the capabilities as a map for internal use.
-func GetCoderCapabilitiesMap() map[string]repository.Function {
-	coderMap := make(map[string]repository.Function)
-	for _, v := range CoderCapabilities {
-		coderMap[v.Name] = v
-	}
-	return coderMap
-}
-
-// Helper function to extract a code block and its language from a string.
-func extractCodeBlock(text string) (string, string, bool) {
-	re := regexp.MustCompile("(?s)```([a-zA-Z0-9]+)\\n(.*?)```")
-	matches := re.FindStringSubmatch(text)
-	if len(matches) == 3 {
-		return strings.TrimSpace(matches[2]), strings.TrimSpace(matches[1]), true
-	}
-	return "", "", false
-}
-
-// Helper function to get a file extension from a language name.
-func getFileExtension(language string) string {
-	switch strings.ToLower(language) {
-	case "python":
-		return "py"
-	case "go":
-		return "go"
-	case "javascript":
-		return "js"
-	case "c":
-		return "c"
-	case "bash":
-		return "sh"
-	case "java":
-		return "java"
-	default:
-		return "txt"
-	}
-}
-
-// ExecuteCode executes a given code snippet in a temporary file and returns the output.
-func ExecuteCode(data map[string]any) map[string]any {
-	code, ok := data["code"].(string)
+func TakeInputFromTerminal(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
 	if !ok {
-		return map[string]any{"error": "code is required"}
+		return map[string]any{"error": "No Text Provided"}
 	}
-	language, ok := data["language"].(string)
-	if !ok {
-		return map[string]any{"error": "language is required"}
-	}
+	fmt.Println(text)
 
-	filename, ok := data["filename"].(string)
-	if !ok || filename == "" {
-		tempFile, err := os.CreateTemp("", "dost-code-*.py")
+	requirements, ok := args["requirements"].([]any)
+	reader := bufio.NewReader(os.Stdin)
+
+	// Case 1: No requirements -> just take a single input
+	if !ok || len(requirements) == 0 {
+		fmt.Print("dost> ")
+		input, err := reader.ReadString('\n')
 		if err != nil {
-			return map[string]any{"error": fmt.Sprintf("failed to create temporary file: %v", err)}
-		}
-		filename = tempFile.Name()
-		tempFile.Close()
-	}
-
-	if err := os.WriteFile(filename, []byte(code), 0644); err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to write code to file: %v", err)}
-	}
-
-	defer os.Remove(filename)
-
-	fmt.Printf("Executing code in %s from file %s:\n", language, filename)
-
-	var cmd *exec.Cmd
-	switch language {
-	case "python":
-		cmd = exec.Command("python", filename)
-	case "go":
-		cmd = exec.Command("go", "run", filename)
-	case "javascript":
-		cmd = exec.Command("node", filename)
-	case "bash":
-		cmd = exec.Command("bash", filename)
-	case "c":
-		// For C, we need to compile and then run
-		execFile := filename[:len(filename)-len(filepath.Ext(filename))]
-		compileCmd := exec.Command("gcc", filename, "-o", execFile, "-lm")
-		var compileErr bytes.Buffer
-		compileCmd.Stderr = &compileErr
-		if err := compileCmd.Run(); err != nil {
-			os.Remove(execFile)
 			return map[string]any{
-				"status": "failed",
-				"error":  fmt.Sprintf("compilation failed: %v", compileErr.String()),
+				"error":  fmt.Sprintf("Error reading input: %v", err),
+				"output": nil,
 			}
 		}
-		defer os.Remove(execFile)
-		cmd = exec.Command(execFile)
-	case "java":
-		return map[string]any{"error": "Java execution is not yet implemented"}
-	default:
-		return map[string]any{"error": fmt.Sprintf("unsupported language: %s", language)}
+		input = strings.TrimSpace(input)
+		if input == "" {
+			return map[string]any{"error": nil, "output": "<no input provided>"}
+		}
+		return map[string]any{"error": nil, "output": input}
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Case 2: Requirements exist -> ask each question
+	results := make(map[string]string)
+	for _, req := range requirements {
+		question, ok := req.(string)
+		if !ok {
+			continue
+		}
 
-	if err := cmd.Run(); err != nil {
+		fmt.Printf("dost> %s: ", question)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return map[string]any{
+				"error":  fmt.Sprintf("Error reading input: %v", err),
+				"output": nil,
+			}
+		}
+
+		input = strings.TrimSpace(input)
+		if input == "" {
+			results[question] = "<no input provided>"
+		} else {
+			results[question] = input
+		}
+	}
+
+	return map[string]any{"error": nil, "output": results}
+}
+
+// CreateFile creates new files - FIXED VERSION
+func CreateFile(data map[string]any) map[string]any {
+	text, ok := data["text"].(string)
+	if ok {
+		fmt.Printf("CODER: %s\n", text)
+	}
+
+	// Handle both single file and multiple files
+	fileNames, hasFileNames := data["file_names"].([]interface{})
+	contents, hasContents := data["contents"].([]interface{})
+
+	// Single file creation (backward compatibility)
+	if path, hasPath := data["path"].(string); hasPath {
+		content, hasContent := data["content"].(string)
+		if !hasContent {
+			return map[string]any{"error": "content is required"}
+		}
+
+		dir := filepath.Dir(path)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return map[string]any{"error": fmt.Sprintf("failed to create directory for file: %v", err)}
+		}
+
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return map[string]any{"error": fmt.Sprintf("failed to create file: %v", err)}
+		}
+
 		return map[string]any{
-			"status": "failed",
-			"error":  fmt.Sprintf("execution failed: %v", stderr.String()),
+			"status": "completed",
+			"output": fmt.Sprintf("File created successfully at %s", path),
+		}
+	}
+
+	// Multiple files creation
+	if !hasFileNames || !hasContents {
+		return map[string]any{"error": "file_names and contents are required"}
+	}
+
+	if len(fileNames) != len(contents) {
+		return map[string]any{"error": "file_names and contents arrays must have the same length"}
+	}
+
+	var createdFiles []string
+	var errors []string
+
+	for i, fileNameInterface := range fileNames {
+		fileName, ok := fileNameInterface.(string)
+		if !ok {
+			errors = append(errors, fmt.Sprintf("Invalid file name at index %d", i))
+			continue
+		}
+
+		content, ok := contents[i].(string)
+		if !ok {
+			errors = append(errors, fmt.Sprintf("Invalid content at index %d", i))
+			continue
+		}
+
+		// Create directory if it doesn't exist
+		dir := filepath.Dir(fileName)
+		if dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to create directory for %s: %v", fileName, err))
+				continue
+			}
+		}
+
+		// Write the file
+		if err := os.WriteFile(fileName, []byte(content), 0644); err != nil {
+			errors = append(errors, fmt.Sprintf("Failed to create %s: %v", fileName, err))
+			continue
+		}
+
+		createdFiles = append(createdFiles, fileName)
+		fmt.Printf("Created file: %s\n", fileName)
+	}
+
+	if len(errors) > 0 {
+		return map[string]any{
+			"error":         strings.Join(errors, "; "),
+			"output":        fmt.Sprintf("Created %d files successfully", len(createdFiles)),
+			"created_files": createdFiles,
 		}
 	}
 
 	return map[string]any{
 		"status": "completed",
-		"output": stdout.String(),
-	}
-}
-
-// CreateFile creates a new file at a specified path with the given content.
-func CreateFile(data map[string]any) map[string]any {
-	path, ok := data["path"].(string)
-	if !ok {
-		return map[string]any{"error": "path is required"}
-	}
-	content, ok := data["content"].(string)
-	if !ok {
-		return map[string]any{"error": "content is required"}
-	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to create directory for file: %v", err)}
-	}
-
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to create file: %v", err)}
-	}
-
-	return map[string]any{
-		"status":  "completed",
-		"message": fmt.Sprintf("File created successfully at %s", path),
+		"output": fmt.Sprintf("Successfully created %d files: %s", len(createdFiles), strings.Join(createdFiles, ", ")),
 	}
 }
 
 // ReadFile reads the content of a file from a specified path.
-func ReadFile(data map[string]any) map[string]any {
-	path, ok := data["path"].(string)
+func ReadFiles(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if ok {
+		fmt.Printf("CODER: %s", text)
+	}
+
+	fileNames, ok := args["file_names"].([]interface{})
 	if !ok {
-		return map[string]any{"error": "path is required"}
+		return map[string]any{
+			"error":  "Invalid arguments: 'file_names' must be a slice of strings",
+			"output": nil,
+		}
 	}
 
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to read file: %v", err)}
+	var stringFileNames []string
+	for _, v := range fileNames {
+		s, ok := v.(string)
+		if !ok {
+			return map[string]any{
+				"error":  "Invalid argument: 'file_names' contains non-string values",
+				"output": nil,
+			}
+		}
+		stringFileNames = append(stringFileNames, s)
 	}
 
-	return map[string]any{
-		"status":  "completed",
-		"content": string(content),
+	readFiles := make(map[string]any)
+	var notFoundFiles []string
+
+	for _, fileName := range stringFileNames {
+		file, err := os.Open(fileName)
+		if err != nil {
+			notFoundFiles = append(notFoundFiles, fileName)
+			continue
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		chunks := []map[string]any{}
+
+		var builder strings.Builder
+		lineCount := 0
+		chunkSize := 40 // number of lines per chunk
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			builder.WriteString(line)
+			builder.WriteString("\n")
+			lineCount++
+
+			if lineCount%chunkSize == 0 {
+				chunks = append(chunks, map[string]any{
+					"start":   lineCount - chunkSize + 1,
+					"end":     lineCount,
+					"content": builder.String(),
+				})
+				builder.Reset()
+			} else {
+				// snapshot for progressive reading
+				chunks = append(chunks, map[string]any{
+					"start":   lineCount - (lineCount % chunkSize) + 1,
+					"end":     lineCount,
+					"content": builder.String(),
+				})
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			readFiles[fileName] = fmt.Sprintf("Error reading file: %v", err)
+			continue
+		}
+
+		readFiles[fileName] = chunks
+		fmt.Printf("Read file: %s (%d chunks)\n", fileName, len(chunks))
 	}
+
+	if len(notFoundFiles) > 0 {
+		fmt.Printf("Files not found: %v\n", notFoundFiles)
+	}
+
+	return map[string]any{"error": nil, "output": readFiles}
 }
 
 // ListDirectory lists all files and subdirectories in a given directory path.
@@ -699,100 +574,12 @@ func ListDirectory(data map[string]any) map[string]any {
 	}
 }
 
-// AnalyzeCode analyzes a code snippet to identify potential issues, best practices, or provide an explanation.
-func AnalyzeCode(data map[string]any) map[string]any {
-	_, ok := data["code"].(string)
-	if !ok {
-		return map[string]any{"error": "code is required"}
-	}
-	language, ok := data["language"].(string)
-	if !ok {
-		return map[string]any{"error": "language is required"}
-	}
-
-	analysisResult := fmt.Sprintf("Analysis for %s code completed. This is a placeholder for a detailed analysis.", language)
-
-	return map[string]any{
-		"status": "completed",
-		"output": analysisResult,
-	}
-}
-
-// DebugCode identifies and fixes bugs in a given code snippet or file.
-func DebugCode(data map[string]any) map[string]any {
-	_, ok := data["code"].(string)
-	if !ok {
-		return map[string]any{"error": "code is required"}
-	}
-	language, ok := data["language"].(string)
-	if !ok {
-		return map[string]any{"error": "language is required"}
-	}
-	errorMessage, _ := data["error_message"].(string)
-
-	debugResult := fmt.Sprintf("Debugging complete for %s code. Identified a potential fix related to: %s. This is a placeholder.", language, errorMessage)
-
-	return map[string]any{
-		"status": "completed",
-		"output": debugResult,
-	}
-}
-
-// RefactorCode refactors a code snippet to improve its structure and readability without changing its functionality.
-func RefactorCode(data map[string]any) map[string]any {
-	_, ok := data["code"].(string)
-	if !ok {
-		return map[string]any{"error": "code is required"}
-	}
-	reason, _ := data["reason"].(string)
-
-	refactoredCode := fmt.Sprintf("Refactored code snippet based on the reason: %s. This is a placeholder.", reason)
-
-	return map[string]any{
-		"status": "completed",
-		"output": refactoredCode,
-	}
-}
-
-// GenerateTests generates unit tests for a given function or code block.
-func GenerateTests(data map[string]any) map[string]any {
-	_, ok := data["code"].(string)
-	if !ok {
-		return map[string]any{"error": "code is required"}
-	}
-	language, ok := data["language"].(string)
-	if !ok {
-		return map[string]any{"error": "language is required"}
-	}
-
-	tests := fmt.Sprintf("Test code generated for %s. This is a placeholder.", language)
-
-	return map[string]any{
-		"status": "completed",
-		"output": tests,
-	}
-}
-
-// CreateDirectory creates a new directory at the specified path.
-func CreateDirectory(data map[string]any) map[string]any {
-	path, ok := data["path"].(string)
-	if !ok {
-		return map[string]any{"error": "path is required"}
-	}
-
-	err := os.MkdirAll(path, 0755)
-	if err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to create directory: %v", err)}
-	}
-
-	return map[string]any{
-		"status":  "completed",
-		"message": fmt.Sprintf("Directory created successfully at %s", path),
-	}
-}
-
 // DeleteFileOrDir deletes a file or directory at the specified path.
 func DeleteFileOrDir(data map[string]any) map[string]any {
+	text, ok := data["text"].(string)
+	if ok {
+		fmt.Printf("CODER: %s", text)
+	}
 	path, ok := data["path"].(string)
 	if !ok {
 		return map[string]any{"error": "path is required"}
@@ -804,35 +591,370 @@ func DeleteFileOrDir(data map[string]any) map[string]any {
 	}
 
 	return map[string]any{
-		"status":  "completed",
-		"message": fmt.Sprintf("Deleted successfully at %s", path),
+		"status": "completed",
+		"output": fmt.Sprintf("Deleted successfully at %s", path),
 	}
 }
 
 // EditFile edits a file at a given path.
-func EditFile(data map[string]any) map[string]any {
-	path, ok := data["path"].(string)
-	if !ok {
-		return map[string]any{"error": "path is required"}
-	}
-	changes, ok := data["changes"].(string)
-	if !ok {
-		return map[string]any{"error": "changes are required"}
-	}
+// Piece Table - what is it ??
 
-	originalContent, err := os.ReadFile(path)
+func EditFile(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if ok {
+		fmt.Printf("CODER: %s", text)
+	}
+	filepath, ok := args["file_path"].(string)
+	if !ok {
+		return map[string]any{"error": "ERROR READING PATH"}
+	}
+	changes, ok := args["changes"].([]map[string]any)
+	if !ok {
+		return map[string]any{"error": "REQUIRED CHANGES MAP"}
+	}
+	// Step 1: Load file
+	data, err := os.ReadFile(filepath)
 	if err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to read file for editing: %v", err)}
+		return map[string]any{"error": "ERROR READING FILE"}
+	}
+	pt := NewPieceTable(string(data))
+
+	// Step 2: Convert line+col into absolute position
+	lines := strings.Split(string(data), "\n")
+
+	posFromLineCol := func(line, col int) int {
+		pos := 0
+		for i := 0; i < line-1; i++ {
+			pos += len(lines[i]) + 1 // +1 for newline
+		}
+		return pos + col
 	}
 
-	newContent := strings.Replace(string(originalContent), "placeholder", changes, -1)
+	for _, ch := range changes {
+		StartLine, ok := ch["start_line"].(int)
+		if !ok {
+			return map[string]any{"error": "ERROR READING StartLine"}
+		}
+		StartCol, ok := ch["start_col"].(int)
+		if !ok {
+			return map[string]any{"error": "ERROR READING StartCol"}
+		}
+		EndLine, ok := ch["end_line"].(int)
+		if !ok {
+			return map[string]any{"error": "ERROR READING EndLine"}
+		}
+		EndCol, ok := ch["end_col"].(int)
+		if !ok {
+			return map[string]any{"error": "ERROR READING EndCol"}
+		}
+		Operation, ok := ch["operation"].(string)
+		if !ok {
+			return map[string]any{"error": "ERROR READING Operation"}
+		}
+		Content, ok := ch["contents"].(string)
+		if !ok {
+			return map[string]any{"error": "ERROR READING Content"}
+		}
+		start := posFromLineCol(StartLine, StartCol)
+		end := posFromLineCol(EndLine, EndCol)
 
-	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to write edited content to file: %v", err)}
+		switch Operation {
+		case "delete":
+			pt.Delete(start, end-start)
+		case "replace":
+			pt.Delete(start, end-start)
+			pt.Insert(start, Content)
+		case "write":
+			pt.Insert(start, Content)
+		default:
+			return map[string]any{"error": "UNKNOWN OPERATIONS"}
+		}
 	}
 
-	return map[string]any{
-		"status":  "completed",
-		"message": fmt.Sprintf("File edited successfully at %s", path),
+	// Step 3: Save back to file
+	newContent := pt.String()
+	err = os.WriteFile(filepath, []byte(newContent), 0644)
+	if err != nil {
+		return map[string]any{"error": "UNABLE TO WRITE THE DATA IN FILE"}
+	} else {
+		return map[string]any{"output": "Successfully Written The content you provided"}
+	}
+}
+func ExitProcess(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if ok && text != "" {
+		fmt.Println(text)
+	}
+
+	fmt.Println("--- Task completed successfully! Exiting...")
+	return map[string]any{"error": nil, "output": "Task Completed Successfully", "exit": true}
+
+}
+
+// --------------------------------------------------//
+//
+//									//
+//	IMPORTANT						//
+//									//
+//
+// --------------------------------------------------//
+func NewPieceTable(content string) *PieceTable {
+	return &PieceTable{
+		Original: content,
+		Add:      "",
+		Pieces:   []Piece{{Buffer: "original", Start: 0, Length: len(content)}},
+	}
+}
+
+func (pt *PieceTable) String() string {
+	var builder strings.Builder
+	for _, piece := range pt.Pieces {
+		switch piece.Buffer {
+		case "original":
+			builder.WriteString(pt.Original[piece.Start : piece.Start+piece.Length])
+		case "add":
+			builder.WriteString(pt.Add[piece.Start : piece.Start+piece.Length])
+		}
+	}
+	return builder.String()
+}
+
+func (pt *PieceTable) Insert(pos int, text string) {
+	// Append to add buffer
+	addStart := len(pt.Add)
+	pt.Add += text
+
+	newPiece := Piece{Buffer: "add", Start: addStart, Length: len(text)}
+
+	offset := 0
+	for i, piece := range pt.Pieces {
+		if offset+piece.Length >= pos {
+			// Found the piece where insertion happens
+			relPos := pos - offset
+
+			// Split piece into before + new + after
+			before := Piece{Buffer: piece.Buffer, Start: piece.Start, Length: relPos}
+			after := Piece{Buffer: piece.Buffer, Start: piece.Start + relPos, Length: piece.Length - relPos}
+
+			newPieces := []Piece{}
+			if before.Length > 0 {
+				newPieces = append(newPieces, before)
+			}
+			newPieces = append(newPieces, newPiece)
+			if after.Length > 0 {
+				newPieces = append(newPieces, after)
+			}
+
+			pt.Pieces = append(pt.Pieces[:i], append(newPieces, pt.Pieces[i+1:]...)...)
+			return
+		}
+		offset += piece.Length
+	}
+}
+
+func (pt *PieceTable) Delete(start, length int) {
+	end := start + length
+	offset := 0
+	newPieces := []Piece{}
+
+	for _, piece := range pt.Pieces {
+		if offset+piece.Length <= start || offset >= end {
+			// Outside deletion range, keep piece
+			newPieces = append(newPieces, piece)
+		} else {
+			// Overlaps deletion range
+			relStart := max(0, start-offset)
+			relEnd := min(piece.Length, end-offset)
+
+			if relStart > 0 {
+				newPieces = append(newPieces, Piece{
+					Buffer: piece.Buffer,
+					Start:  piece.Start,
+					Length: relStart,
+				})
+			}
+			if relEnd < piece.Length {
+				newPieces = append(newPieces, Piece{
+					Buffer: piece.Buffer,
+					Start:  piece.Start + relEnd,
+					Length: piece.Length - relEnd,
+				})
+			}
+		}
+		offset += piece.Length
+	}
+	pt.Pieces = newPieces
+}
+
+var CoderCapabilities = []repository.Function{
+	{
+		Name: "exit-process",
+		Description: `When you feel that the task is completed always call this to exit the process.
+Before calling this function make sure,
+You have completed all the task.
+You have fixed all the bugs.
+User is satisfied with the output.`,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"text": {
+					Type:        repository.TypeString,
+					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+				},
+			},
+			Required: []string{},
+		},
+		Service: ExitProcess,
+		Return: repository.Return{
+			"error":  "string",
+			"output": "string",
+		},
+	},
+
+	{
+		Name:        DeleteFileOrDirName,
+		Description: DeleteFileOrDirDescription,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"text": {
+					Type:        repository.TypeString,
+					Description: "Additional context or instructions provided by the AI for the edit operation.",
+				},
+				"path": {
+					Type:        repository.TypeString,
+					Description: "The path of the file or directory to delete.",
+				},
+			},
+			Required: []string{"text", "path"},
+		},
+		Service: DeleteFileOrDir,
+	},
+
+	{
+		Name:        EditFileFromName,
+		Description: EditFileDescription,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"text": {
+					Type:        repository.TypeString,
+					Description: "Additional context or instructions provided by the AI for the edit operation.",
+				},
+				"file_path": {
+					Type:        repository.TypeString,
+					Description: "The path of the file to edit. Example: './folder/file.go'.",
+				},
+				"changes": {
+					Type:        repository.TypeArray,
+					Description: "A list of changes to apply to the file, with each change specifying a selection and an operation.",
+					Items: &repository.Properties{
+						Type:        repository.TypeObject,
+						Description: "Operation Meta data",
+						Properties: map[string]*repository.Properties{
+							"start_line_number": {
+								Type:        repository.TypeInteger,
+								Description: "The starting line number (1-based) of the change range.",
+							},
+							"start_line_col": {
+								Type:        repository.TypeInteger,
+								Description: "The starting column number (0-based) of the change range.",
+							},
+							"end_line_number": {
+								Type:        repository.TypeInteger,
+								Description: "The ending line number (1-based) of the change range.",
+							},
+							"end_line_col": {
+								Type:        repository.TypeInteger,
+								Description: "The ending column number (0-based) of the change range.",
+							},
+							"operation": {
+								Enum:        []string{"delete", "replace", "write"},
+								Type:        repository.TypeString,
+								Description: "The operation to perform on the selected range. Options: 'delete' (remove text), 'replace' (replace text with new content), or 'write' (insert new content at start).",
+							},
+							"content": {
+								Type:        repository.TypeString,
+								Description: "The replacement or insertion text to apply. Required for 'replace' and 'write' operations.",
+							},
+						},
+						Required: []string{"start_line_number", "start_line_col", "end_line_number", "end_line_col", "operation", "content"},
+					},
+				},
+			},
+			Required: []string{"text", "file_path", "changes"},
+		},
+		Service: EditFile,
+	},
+	{
+		Name:        RequestUserInputName,
+		Description: RequestUserInputDescription,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"text": {
+					Type:        repository.TypeString,
+					Description: "The message to display to the user when requesting input.",
+				},
+			},
+			Required: []string{"text"},
+		},
+		Service: TakeInputFromTerminal,
+	},
+	{
+		Name: "create-file",
+		Description: `
+Creates new files with the given names and contents.
+Make sure that the file names and the file contents are in the same order.
+Call this when the files do not exist and you need to create them.
+If the files might already exist, first call 'read_files' to check.
+
+`,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"file_names": {
+					Type:        repository.TypeArray,
+					Items:       &repository.Properties{Type: repository.TypeString},
+					Description: "Name of the file to create (with extension)",
+				},
+				"contents": {
+					Type:        repository.TypeArray,
+					Items:       &repository.Properties{Type: repository.TypeString},
+					Description: "Full content to write in the new file",
+				},
+			},
+			Required: []string{"file_names", "contents"},
+		},
+		Service: CreateFile,
+		Return:  repository.Return{"error": "string", "output": "string"},
+	},
+}
+
+// GetCoderCapabilities returns the list of all capabilities for the AgentCoder.
+func GetCoderCapabilities() []repository.Function {
+	return CoderCapabilities
+}
+
+// GetCoderCapabilitiesArrayMap returns the capabilities as a list of maps for API use.
+func GetCoderCapabilitiesArrayMap() []map[string]any {
+	coderMap := make([]map[string]any, 0)
+	for _, v := range CoderCapabilities {
+		coderMap = append(coderMap, v.ToObject())
+	}
+	return coderMap
+}
+
+// GetCoderCapabilitiesMap returns the capabilities as a map for internal use.
+func GetCoderCapabilitiesMap() map[string]repository.Function {
+	coderMap := make(map[string]repository.Function)
+	for _, v := range CoderCapabilities {
+		coderMap[v.Name] = v
+	}
+	return coderMap
+}
+func init() {
+	for _, v := range CoderCapabilities {
+		CodertoolsFunc[v.Name] = v
 	}
 }

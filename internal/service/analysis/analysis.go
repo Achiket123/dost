@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -32,17 +33,20 @@ var defaultIgnore = map[string]bool{
 var ignoreMatcher *gitignore.GitIgnore
 var AnalysisMap = make(map[string]Analysis, 0)
 var AnalysistoolsFunc map[string]repository.Function = make(map[string]repository.Function)
+var InputData = make(map[string]any, 0)
 var ChatHistory = make([]map[string]any, 0)
 
 type Analysis struct {
-	ID             string       `json:"id"`
-	DetailSummary  string       `json:"detail_summary"`
-	Summary        string       `json:"summary"`
-	Domain         string       `json:"domain"`
-	Constraints    Constraints  `json:"constraints"`
-	InputsDetected Inputs       `json:"inputs_detected"`
-	Risks          []string     `json:"risks"`
-	ExpectedOutput OutputFormat `json:"expected_output"`
+	ID              string         `json:"id"`
+	DetailSummary   string         `json:"detail_summary"`
+	Summary         string         `json:"summary"`
+	Domain          string         `json:"domain"`
+	Constraints     Constraints    `json:"constraints"`
+	InputsDetected  Inputs         `json:"inputs_detected"`
+	Risks           []string       `json:"risks"`
+	ExpectedOutput  OutputFormat   `json:"expected_output"`
+	OperatingSystem string         `json:"operating_system"`
+	QueryInputs     map[string]any `json:"query_input`
 }
 
 type Constraints struct {
@@ -131,6 +135,11 @@ func (p *AgentAnalysis) Interaction(args map[string]any) map[string]any {
 				if function, exists := AnalysistoolsFunc[name]; exists {
 					result := function.Run(argsData)
 					if _, ok = result["exit"].(bool); ok {
+
+						analysisID := result["output"].(string)
+						analysis := AnalysisMap[analysisID]
+						analysis.QueryInputs = InputData
+						AnalysisMap[analysisID] = analysis
 						return map[string]any{"analysis-id": result["output"]}
 					}
 					// Add function response to chat history
@@ -349,6 +358,7 @@ func PutAgentOutput(args map[string]any) map[string]any {
 		fmt.Println(" Error unmarshaling into AnalysisAgentOutput:", err)
 		return map[string]any{"error": err}
 	}
+	output.OperatingSystem = runtime.GOOS
 	AnalysisMap[output.ID] = output
 
 	fmt.Printf("… Stored analysis for task %s\n", output.ID)
@@ -395,6 +405,7 @@ func TakeInputFromTerminal(args map[string]any) map[string]any {
 		} else {
 			results[question] = input
 		}
+		InputData[question] = results[question]
 	}
 
 	return map[string]any{"error": nil, "output": results}
@@ -412,11 +423,6 @@ func ExitProcess(args map[string]any) map[string]any {
 }
 
 func ReadFiles(args map[string]any) map[string]any {
-	text, ok := args["text"].(string)
-	if ok && text != "" {
-		fmt.Println(text)
-	}
-
 	fileNames, ok := args["file_names"].([]interface{})
 	if !ok {
 		return map[string]any{
@@ -449,11 +455,33 @@ func ReadFiles(args map[string]any) map[string]any {
 		defer file.Close()
 
 		scanner := bufio.NewScanner(file)
+		chunks := []map[string]any{}
+
 		var builder strings.Builder
+		lineCount := 0
+		chunkSize := 40 // number of lines per chunk
 
 		for scanner.Scan() {
-			builder.WriteString(scanner.Text())
-			builder.WriteString("\n") // preserve newline
+			line := scanner.Text()
+			builder.WriteString(line)
+			builder.WriteString("\n")
+			lineCount++
+
+			if lineCount%chunkSize == 0 {
+				chunks = append(chunks, map[string]any{
+					"start":   lineCount - chunkSize + 1,
+					"end":     lineCount,
+					"content": builder.String(),
+				})
+				builder.Reset()
+			} else {
+				// snapshot for progressive reading
+				chunks = append(chunks, map[string]any{
+					"start":   lineCount - (lineCount % chunkSize) + 1,
+					"end":     lineCount,
+					"content": builder.String(),
+				})
+			}
 		}
 
 		if err := scanner.Err(); err != nil {
@@ -461,10 +489,8 @@ func ReadFiles(args map[string]any) map[string]any {
 			continue
 		}
 
-		content := builder.String()
-		readFiles[fileName] = content
-
-		fmt.Printf("Read file: %s (%d bytes)\n", fileName, len(content))
+		readFiles[fileName] = chunks
+		fmt.Printf("Read file: %s (%d chunks)\n", fileName, len(chunks))
 	}
 
 	if len(notFoundFiles) > 0 {
