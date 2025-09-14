@@ -489,6 +489,94 @@ func ReadFiles(args map[string]any) map[string]any {
 	return map[string]any{"error": nil, "output": readFiles}
 }
 
+func WriteFile(args map[string]any) map[string]any {
+	/*
+		args : {
+			file_names : [ "test.txt" ],
+			contents : [ "hello world" ],
+			offsets: [ 0 ]
+		}
+	*/
+	fileNames, hasFileNames := args["file_names"]
+	contents, hasContents := args["contents"]
+	offsets, hasOffsets := args["offsets"]
+
+	if !hasFileNames || !hasContents {
+		return map[string]any{"error": "Invalid arguments: file_names and contents required", "output": nil}
+	}
+
+	// Type assertions
+	fileNamesSlice, ok1 := fileNames.([]interface{})
+	contentsSlice, ok2 := contents.([]interface{})
+	offsetsSlice, _ := offsets.([]interface{})
+
+	if !ok1 || !ok2 {
+		return map[string]any{"error": "Invalid arguments: file_names and contents must be slices", "output": nil}
+	}
+	// Check if offsets are provided and if the length matches
+	if hasOffsets && len(offsetsSlice) != len(fileNamesSlice) {
+		return map[string]any{"error": "Invalid arguments: offsets must have the same length as file_names", "output": nil}
+	}
+
+	if len(fileNamesSlice) != len(contentsSlice) {
+		return map[string]any{"error": "Invalid arguments: file_names and contents must have the same length", "output": nil}
+	}
+
+	var errors []error
+	var modifiedFiles []string
+
+	for i, v := range fileNamesSlice {
+		fileName := v.(string)
+		content := contentsSlice[i].(string)
+
+		// Determine the offset for the current file
+		var offset int64
+		if hasOffsets {
+			offset = int64(offsetsSlice[i].(float64)) // JSON numbers are float64 in Go
+			if offset < 0 {
+				errors = append(errors, fmt.Errorf("invalid offset for file %s: offset must be non-negative", fileName))
+				continue
+			}
+		}
+
+		// Check if file exists. If not, open it to create it.
+		file, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE, 0644)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("failed to open/create file %s: %v", fileName, err))
+			continue
+		}
+		defer file.Close()
+
+		// Seek to the specified offset before writing
+		_, err = file.Seek(offset, os.SEEK_SET)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("failed to seek to offset for file %s: %v", fileName, err))
+			continue
+		}
+
+		// Write the content to the file
+		_, err = file.WriteString(content)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("failed to write to file %s: %v", fileName, err))
+			continue
+		}
+
+		fmt.Printf("Modified file: %s at offset %d\n", fileName, offset)
+		modifiedFiles = append(modifiedFiles, fileName)
+	}
+
+	if len(errors) > 0 {
+		return map[string]any{
+			"error":  fmt.Sprintf("Errors: %v", errors),
+			"output": fmt.Sprintf("Partially completed. Modified files: %v", modifiedFiles),
+		}
+	}
+
+	return map[string]any{
+		"error":  nil,
+		"output": fmt.Sprintf("Files modified successfully: %v", modifiedFiles),
+	}
+}
 func (p *AgentOrchestrator) RequestAgent(contents []map[string]any) map[string]any {
 	fmt.Printf("Processing request with Orchestrator Agent: %s\n", p.Metadata.Name)
 
@@ -822,6 +910,41 @@ User is satisfied with the output.`,
 			"error":  "string",
 			"output": "string",
 		},
+	},
+	{
+		Name: "write-file",
+		Description: `Overwrites the entire content of an existing file.
+		It opens the file in append mode.
+	Always call 'read_files' first to retrieve existing content before making modifications.`,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"file_names": {
+					Type:        repository.TypeArray,
+					Items:       &repository.Properties{Type: repository.TypeString},
+					Description: "Name of the file to create (with extension)",
+				},
+				"contents": {
+					Type:        repository.TypeArray,
+					Items:       &repository.Properties{Type: repository.TypeString},
+					Description: "Full content to write in the new file",
+				},
+				"offsets": {
+					Type:  repository.TypeArray,
+					Items: &repository.Properties{Type: repository.TypeNumber},
+					Description: `The number represents a byte offset from the beginning of the file. By setting this value, you can:
+If the offsets parameter is not provided, the function will default to overwriting the entire file.
+Append Content: If you set the offset to the current size of the file, you can append new content to the end.
+
+Overwrite Content: If you set the offset to a position within the existing file, any new content will overwrite the old content starting from that point.
+
+Create Sparse Files: If you set the offset to a position beyond the current end of the file, the operating system will create a "sparse file" by inserting zero bytes as padding until the specified offset is reached.`,
+				},
+			},
+			Required: []string{"file_names", "contents", "offsets"},
+		},
+		Service: WriteFile,
+		Return:  repository.Return{"error": "string", "output": "string"},
 	},
 	{
 		Name: "ask-an-agent",
