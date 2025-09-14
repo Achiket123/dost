@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -34,6 +36,7 @@ var ignoreMatcher *gitignore.GitIgnore
 var AnalysisMap = make(map[string]Analysis, 0)
 var AnalysistoolsFunc map[string]repository.Function = make(map[string]repository.Function)
 var InputData = make(map[string]any, 0)
+var FilesRead = make(map[string]any, 0)
 var ChatHistory = make([]map[string]any, 0)
 
 type Analysis struct {
@@ -46,7 +49,8 @@ type Analysis struct {
 	Risks           []string       `json:"risks"`
 	ExpectedOutput  OutputFormat   `json:"expected_output"`
 	OperatingSystem string         `json:"operating_system"`
-	QueryInputs     map[string]any `json:"query_input`
+	QueryInputs     map[string]any `json:"query_input"`
+	FilesRead       map[string]any `json:"files_read"`
 }
 
 type Constraints struct {
@@ -208,12 +212,12 @@ func (p *AgentAnalysis) RequestAgent(contents []map[string]any) map[string]any {
 		},
 		"toolConfig": map[string]any{
 			"functionCallingConfig": map[string]any{
-				"mode": "ANY", // Changed from "FORCE_CALLS" string to proper object
+				"mode": "ANY",
 			},
 		},
 		"contents": contents,
 		"tools": []map[string]any{
-			{"functionDeclarations": GetAnalysisToolsMap()}, // Also fixed snake_case to camelCase
+			{"functionDeclarations": GetAnalysisToolsMap()},
 		},
 	}
 
@@ -223,98 +227,169 @@ func (p *AgentAnalysis) RequestAgent(contents []map[string]any) map[string]any {
 		return map[string]any{"error": err.Error(), "output": nil}
 	}
 
-	// Create HTTP request
-	req, err := http.NewRequestWithContext(
-		context.Background(),
-		"POST",
-		p.Metadata.Endpoints["http"],
-		bytes.NewBuffer(jsonBody),
-	)
-	if err != nil {
-		return map[string]any{"error": err.Error(), "output": nil}
-	}
+	// Retry configuration
+	const maxRetries = 5
+	const maxWaitTime = 10 * time.Minute
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-goog-api-key", viper.GetString("PLANNER.API_KEY"))
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Create HTTP request
+		req, err := http.NewRequestWithContext(
+			context.Background(),
+			"POST",
+			p.Metadata.Endpoints["http"],
+			bytes.NewBuffer(jsonBody),
+		)
+		if err != nil {
+			return map[string]any{"error": err.Error(), "output": nil}
+		}
 
-	// Execute request with timeout
-	client := &http.Client{Timeout: p.Metadata.Timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return map[string]any{"error": err.Error(), "output": nil}
-	}
-	defer resp.Body.Close()
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-goog-api-key", viper.GetString("ANALYSIS.API_KEY"))
 
-	// Handle non-200 responses
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		// Execute request with timeout
+		client := &http.Client{Timeout: p.Metadata.Timeout}
+		resp, err := client.Do(req)
+		if err != nil {
+			if attempt == maxRetries {
+				return map[string]any{"error": err.Error(), "output": nil}
+			}
+			// Wait before retrying network errors
+			time.Sleep(repository.ExponentialBackoff(attempt))
+			continue
+		}
+		defer resp.Body.Close()
+
+		// Read response body
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			if attempt == maxRetries {
+				return map[string]any{"error": err.Error(), "output": nil}
+			}
+			time.Sleep(repository.ExponentialBackoff(attempt))
+			continue
+		}
+
+		// Handle successful response
+		if resp.StatusCode == http.StatusOK {
+			var response repository.Response
+			if err = json.Unmarshal(bodyBytes, &response); err != nil {
+				return map[string]any{"error": err.Error(), "output": nil}
+			}
+
+			// Extract both text and function calls
+			output := []map[string]any{}
+
+			for _, cand := range response.Candidates {
+				for _, part := range cand.Content.Parts {
+					if part.Text != "" {
+						output = append(output, map[string]any{
+							"type": "text",
+							"data": part.Text,
+						})
+					}
+					if part.FunctionCall != nil {
+						output = append(output, map[string]any{
+							"type": "functionCall",
+							"name": part.FunctionCall.Name,
+							"args": part.FunctionCall.Args,
+						})
+					}
+				}
+			}
+
+			// Add the model's response to chat history
+			if len(response.Candidates) > 0 && len(response.Candidates[0].Content.Parts) > 0 {
+				parts := []map[string]any{}
+
+				for _, part := range response.Candidates[0].Content.Parts {
+					if part.Text != "" {
+						parts = append(parts, map[string]any{
+							"text": part.Text,
+						})
+					}
+					if part.FunctionCall != nil {
+						parts = append(parts, map[string]any{
+							"functionCall": map[string]any{
+								"name": part.FunctionCall.Name,
+								"args": part.FunctionCall.Args,
+							},
+						})
+					}
+				}
+
+				if len(parts) > 0 {
+					ChatHistory = append(ChatHistory, map[string]any{
+						"role":  response.Candidates[0].Content.Role,
+						"parts": parts,
+					})
+				}
+			}
+
+			return map[string]any{"error": nil, "output": output}
+		}
+
+		// Handle rate limit errors (429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if attempt == maxRetries {
+				return map[string]any{
+					"error": fmt.Sprintf("Rate limit exceeded after %d retries. HTTP %d: %s",
+						maxRetries, resp.StatusCode, string(bodyBytes)),
+					"output": nil,
+				}
+			}
+
+			// Parse retry delay from response
+			retryDelay := repository.ParseRetryDelay(string(bodyBytes))
+
+			// Use provided delay or fallback to exponential backoff
+			var waitTime time.Duration
+			if retryDelay > 0 {
+				waitTime = retryDelay
+			} else {
+				waitTime = repository.ExponentialBackoff(attempt)
+			}
+
+			// Cap wait time to reasonable maximum
+			if waitTime > maxWaitTime {
+				waitTime = maxWaitTime
+			}
+
+			fmt.Printf("Rate limit hit (attempt %d/%d). Waiting %v before retry...\n",
+				attempt+1, maxRetries+1, waitTime)
+
+			time.Sleep(waitTime)
+			continue
+		}
+
+		// Handle other HTTP errors
+		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+			// Server errors - retry with backoff
+			if attempt == maxRetries {
+				return map[string]any{
+					"error": fmt.Sprintf("Server error after %d retries. HTTP %d: %s",
+						maxRetries, resp.StatusCode, string(bodyBytes)),
+					"output": nil,
+				}
+			}
+
+			fmt.Printf("Server error (attempt %d/%d). Waiting %v before retry...\n",
+				attempt+1, maxRetries+1, repository.ExponentialBackoff(attempt))
+
+			time.Sleep(repository.ExponentialBackoff(attempt))
+			continue
+		}
+
+		// Client errors (400-499) except 429 - don't retry
 		return map[string]any{
 			"error":  fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)),
 			"output": nil,
 		}
 	}
 
-	// Parse response
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return map[string]any{"error": err.Error(), "output": nil}
+	return map[string]any{
+		"error":  fmt.Sprintf("Max retries (%d) exceeded", maxRetries),
+		"output": nil,
 	}
-
-	var response repository.Response
-	if err = json.Unmarshal(bodyBytes, &response); err != nil {
-		return map[string]any{"error": err.Error(), "output": nil}
-	}
-
-	// Extract both text and function calls
-	output := []map[string]any{}
-
-	for _, cand := range response.Candidates {
-		for _, part := range cand.Content.Parts {
-			if part.Text != "" {
-				output = append(output, map[string]any{
-					"type": "text",
-					"data": part.Text,
-				})
-			}
-			if part.FunctionCall != nil {
-				output = append(output, map[string]any{
-					"type": "functionCall",
-					"name": part.FunctionCall.Name,
-					"args": part.FunctionCall.Args,
-				})
-			}
-		}
-	}
-
-	// Add the model's response to chat history
-	if len(response.Candidates) > 0 && len(response.Candidates[0].Content.Parts) > 0 {
-		parts := []map[string]any{}
-
-		for _, part := range response.Candidates[0].Content.Parts {
-			if part.Text != "" {
-				parts = append(parts, map[string]any{
-					"text": part.Text,
-				})
-			}
-			if part.FunctionCall != nil {
-				parts = append(parts, map[string]any{
-					"functionCall": map[string]any{
-						"name": part.FunctionCall.Name,
-						"args": part.FunctionCall.Args,
-					},
-				})
-			}
-		}
-
-		if len(parts) > 0 {
-			ChatHistory = append(ChatHistory, map[string]any{
-				"role":  response.Candidates[0].Content.Role,
-				"parts": parts,
-			})
-		}
-	}
-
-	return map[string]any{"error": nil, "output": output}
 }
 
 // GetProjectStructure returns the project structure as a string, ignoring files and directories specified in .gitignore.
@@ -359,6 +434,7 @@ func PutAgentOutput(args map[string]any) map[string]any {
 		return map[string]any{"error": err}
 	}
 	output.OperatingSystem = runtime.GOOS
+	output.FilesRead = FilesRead
 	AnalysisMap[output.ID] = output
 
 	fmt.Printf("… Stored analysis for task %s\n", output.ID)
@@ -423,6 +499,11 @@ func ExitProcess(args map[string]any) map[string]any {
 }
 
 func ReadFiles(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if ok {
+		fmt.Printf("ANALYSIS: %s", text)
+	}
+
 	fileNames, ok := args["file_names"].([]interface{})
 	if !ok {
 		return map[string]any{
@@ -454,39 +535,58 @@ func ReadFiles(args map[string]any) map[string]any {
 		}
 		defer file.Close()
 
+		// Read all lines first
 		scanner := bufio.NewScanner(file)
-		chunks := []map[string]any{}
-
-		var builder strings.Builder
-		lineCount := 0
-		chunkSize := 40 // number of lines per chunk
-
+		var lines []string
 		for scanner.Scan() {
-			line := scanner.Text()
-			builder.WriteString(line)
-			builder.WriteString("\n")
-			lineCount++
-
-			if lineCount%chunkSize == 0 {
-				chunks = append(chunks, map[string]any{
-					"start":   lineCount - chunkSize + 1,
-					"end":     lineCount,
-					"content": builder.String(),
-				})
-				builder.Reset()
-			} else {
-				// snapshot for progressive reading
-				chunks = append(chunks, map[string]any{
-					"start":   lineCount - (lineCount % chunkSize) + 1,
-					"end":     lineCount,
-					"content": builder.String(),
-				})
-			}
+			lines = append(lines, scanner.Text())
 		}
+
+		// Don't chunk unless necessary - send complete small files
 
 		if err := scanner.Err(); err != nil {
 			readFiles[fileName] = fmt.Sprintf("Error reading file: %v", err)
 			continue
+		}
+
+		// Create proper chunks (non-overlapping)
+		chunks := []map[string]any{}
+		chunkSize := 40
+		if len(lines) < 100 {
+			chunks = []map[string]any{{
+				"start":   1,
+				"end":     len(lines),
+				"content": strings.Join(lines, "\n"),
+			}}
+		} else {
+			for i := 0; i < len(lines); i += chunkSize {
+				end := i + chunkSize
+				if end > len(lines) {
+					end = len(lines)
+				}
+
+				// Build chunk content
+				var chunkContent strings.Builder
+				for j := i; j < end; j++ {
+					chunkContent.WriteString(lines[j])
+					chunkContent.WriteString("\n")
+				}
+
+				chunks = append(chunks, map[string]any{
+					"start":   i + 1,
+					"end":     end,
+					"content": chunkContent.String(),
+				})
+			}
+
+			// Handle empty file edge case
+			if len(lines) == 0 {
+				chunks = append(chunks, map[string]any{
+					"start":   1,
+					"end":     0,
+					"content": "",
+				})
+			}
 		}
 
 		readFiles[fileName] = chunks
@@ -498,6 +598,80 @@ func ReadFiles(args map[string]any) map[string]any {
 	}
 
 	return map[string]any{"error": nil, "output": readFiles}
+}
+func ExecuteCommands(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if ok {
+		fmt.Println(text)
+	}
+
+	// Get current working directory
+	wd, err := os.Getwd()
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+
+	// Extract command
+	cmdStr, ok := args["command"].(string)
+	if !ok || cmdStr == "" {
+		return map[string]any{"error": "Invalid command"}
+	}
+
+	// Extract arguments (as array instead of a single string)
+	var argList []string
+	if rawArgs, ok := args["arguments"]; ok {
+		switch v := rawArgs.(type) {
+		case string:
+			// split on spaces if user passed a string
+			if v != "" {
+				argList = strings.Fields(v)
+			}
+		case []any:
+			for _, a := range v {
+				if s, ok := a.(string); ok {
+					argList = append(argList, s)
+				}
+			}
+		}
+	}
+
+	// Handle `cd` separately
+	if cmdStr == "cd" {
+		if len(argList) == 0 {
+			return map[string]any{"error": "cd requires a path"}
+		}
+		newDir := argList[0]
+		if !filepath.IsAbs(newDir) {
+			newDir = filepath.Join(wd, newDir)
+		}
+		if err := os.Chdir(newDir); err != nil {
+			return map[string]any{"error": fmt.Sprintf("failed to change directory: %v", err)}
+		}
+		return map[string]any{"message": fmt.Sprintf("Changed directory to %s", newDir)}
+	}
+
+	// Build command properly
+	cmd := exec.Command(cmdStr, argList...)
+	cmd.Dir = wd
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+
+	log.Default().Printf("Running command in %s: %s %v\n", wd, cmdStr, argList)
+
+	err = cmd.Run()
+	if err != nil {
+		return map[string]any{
+			"error": fmt.Sprintf("command failed: [%s %v] %v || CONSOLE/TERMINAL:%v",
+				cmdStr, argList, err, stderrBuf.String()),
+		}
+	}
+
+	return map[string]any{
+		"message": "Command executed successfully",
+		"output":  stdoutBuf.String(),
+	}
 }
 
 func getProjectStructureRecursive(path string, prefix string, builder *strings.Builder) error {
@@ -768,6 +942,58 @@ Use this whenever you are missing essential details, such as:
 		Return: repository.Return{
 			"error":  "string",
 			"output": "string",
+		},
+	},
+	{
+		Name: "execute-command-in-terminal",
+		Description: `Run any valid shell/terminal command in the current working directory.
+Use this for:
+- File operations (create, delete, list, copy, move, rename, git).
+- Navigation (cd, ls).
+- Installing packages, running build tools.
+- Executing programs, checking versions, inspecting system state.
+- Running compilers/interpreters in syntax-check mode (e.g., g++ -fsyntax-only, python -m py_compile, node --check, go vet).
+This is especially useful for analyzing syntax errors in different programming languages.
+Always provide the command and arguments separately.
+
+Example:
+{ "command": "git", "arguments": ["commit", "-m", "testing through this tool"] }
+
+For syntax checking:
+{ "command": "g++", "arguments": ["-fsyntax-only", "file.cpp"] }
+{ "command": "python", "arguments": ["-m", "py_compile", "script.py"] }
+{ "command": "node", "arguments": ["--check", "app.js"] }`,
+
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"text": {
+					Type:        repository.TypeString,
+					Description: "Optional message or context string for logging/debugging.",
+				},
+				"command": {
+					Type:        repository.TypeString,
+					Description: "Base command to execute (e.g., git, go, npm, python, ls).",
+				},
+				"arguments": {
+					Type: repository.TypeArray,
+					Items: &repository.Properties{
+						Type:        repository.TypeString,
+						Description: "Each argument passed separately (e.g., [\"commit\", \"-m\", \"msg\"]).",
+					},
+					Description: "Optional arguments for the command as an array.",
+				},
+			},
+			Required: []string{"command"},
+			Optional: []string{"text", "arguments"},
+		},
+
+		Service: ExecuteCommands,
+
+		Return: repository.Return{
+			"error":   "string // Error message if the command failed, including stderr output.",
+			"output":  "string // Captured stdout (program output).",
+			"message": "string // Success message when execution completes.",
 		},
 	},
 }

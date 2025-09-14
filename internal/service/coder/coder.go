@@ -8,13 +8,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	gitignore "github.com/sabhiram/go-gitignore"
 	"github.com/spf13/viper"
 )
 
@@ -37,6 +41,19 @@ const RequestUserInputDescription = "Prompts the user for a single line of input
 
 var ChatHistory = make([]map[string]any, 0)
 var CodertoolsFunc map[string]repository.Function = make(map[string]repository.Function)
+var ignoreMatcher *gitignore.GitIgnore
+
+var defaultIgnore = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"vendor":       true,
+	".venv":        true,
+	".env":         true,
+	".idea":        true,
+	".vscode":      true,
+	"__pycache__":  true,
+	".dost":        true,
+}
 
 type AgentCoder repository.Agent
 
@@ -123,7 +140,6 @@ func (p *AgentCoder) Interaction(args map[string]any) map[string]any {
 				// Execute the function
 				if function, exists := CodertoolsFunc[name]; exists {
 					result := function.Run(argsData)
-					fmt.Println("CODERAGENT", result)
 					if _, ok = result["exit"].(bool); ok {
 						return map[string]any{"coder-id": result["output"]}
 					}
@@ -190,6 +206,7 @@ func (c *AgentCoder) NewAgent() {
 func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 	fmt.Printf("Processing request with Coder Agent: %s\n", c.Metadata.Name)
 
+	// Build request payload
 	request := map[string]any{
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{
@@ -198,112 +215,166 @@ func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 		},
 		"toolConfig": map[string]any{
 			"functionCallingConfig": map[string]any{
-				"mode": "ANY", // Changed from "FORCE_CALLS" string to proper object
+				"mode": "ANY",
 			},
 		},
 		"contents": contents,
 		"tools": []map[string]any{
-			{"function_declarations": GetCoderCapabilitiesArrayMap()},
+			{"functionDeclarations": GetCoderCapabilitiesArrayMap()},
 		},
 	}
 
+	// Marshal request body
 	jsonBody, err := json.Marshal(request)
 	if err != nil {
 		return map[string]any{"error": err.Error(), "output": nil}
 	}
 
-	req, err := http.NewRequestWithContext(
-		context.Background(),
-		"POST",
-		c.Metadata.Endpoints["http"],
-		bytes.NewBuffer(jsonBody),
-	)
-	if err != nil {
-		return map[string]any{"error": err.Error(), "output": nil}
-	}
+	// Retry config
+	const maxRetries = 5
+	const maxWaitTime = 10 * time.Minute
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-goog-api-key", viper.GetString("CODER.API_KEY"))
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Create HTTP request
+		req, err := http.NewRequestWithContext(
+			context.Background(),
+			"POST",
+			c.Metadata.Endpoints["http"],
+			bytes.NewBuffer(jsonBody),
+		)
+		if err != nil {
+			return map[string]any{"error": err.Error(), "output": nil}
+		}
 
-	client := &http.Client{Timeout: c.Metadata.Timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return map[string]any{"error": err.Error(), "output": nil}
-	}
-	defer resp.Body.Close()
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-goog-api-key", viper.GetString("CODER.API_KEY"))
 
-	fmt.Println("HELLO 21")
+		// Execute request with timeout
+		client := &http.Client{Timeout: c.Metadata.Timeout}
+		resp, err := client.Do(req)
+		if err != nil {
+			if attempt == maxRetries {
+				return map[string]any{"error": err.Error(), "output": nil}
+			}
+			time.Sleep(repository.ExponentialBackoff(attempt))
+			continue
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			if attempt == maxRetries {
+				return map[string]any{"error": err.Error(), "output": nil}
+			}
+			time.Sleep(repository.ExponentialBackoff(attempt))
+			continue
+		}
+
+		// Handle success
+		if resp.StatusCode == http.StatusOK {
+			var response repository.Response
+			if err = json.Unmarshal(bodyBytes, &response); err != nil {
+				return map[string]any{"error": err.Error(), "output": nil}
+			}
+
+			output := []map[string]any{}
+			for _, cand := range response.Candidates {
+				for _, part := range cand.Content.Parts {
+					if part.Text != "" {
+						output = append(output, map[string]any{
+							"type": "text",
+							"data": part.Text,
+						})
+					}
+					if part.FunctionCall != nil {
+						output = append(output, map[string]any{
+							"type": "functionCall",
+							"name": part.FunctionCall.Name,
+							"args": part.FunctionCall.Args,
+						})
+					}
+				}
+			}
+
+			// Save to ChatHistory
+			if len(response.Candidates) > 0 && len(response.Candidates[0].Content.Parts) > 0 {
+				parts := []map[string]any{}
+				for _, part := range response.Candidates[0].Content.Parts {
+					if part.Text != "" {
+						parts = append(parts, map[string]any{
+							"text": part.Text,
+						})
+					}
+					if part.FunctionCall != nil {
+						parts = append(parts, map[string]any{
+							"functionCall": map[string]any{
+								"name": part.FunctionCall.Name,
+								"args": part.FunctionCall.Args,
+							},
+						})
+					}
+				}
+				if len(parts) > 0 {
+					ChatHistory = append(ChatHistory, map[string]any{
+						"role":  response.Candidates[0].Content.Role,
+						"parts": parts,
+					})
+				}
+			}
+
+			c.Metadata.LastActive = time.Now()
+			return map[string]any{"error": nil, "output": output}
+		}
+
+		// Handle rate limits
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if attempt == maxRetries {
+				return map[string]any{
+					"error": fmt.Sprintf("Rate limit exceeded after %d retries. HTTP %d: %s",
+						maxRetries, resp.StatusCode, string(bodyBytes)),
+					"output": nil,
+				}
+			}
+			retryDelay := repository.ParseRetryDelay(string(bodyBytes))
+			waitTime := retryDelay
+			if waitTime <= 0 {
+				waitTime = repository.ExponentialBackoff(attempt)
+			}
+			if waitTime > maxWaitTime {
+				waitTime = maxWaitTime
+			}
+			fmt.Printf("Rate limit hit (attempt %d/%d). Waiting %v before retry...\n",
+				attempt+1, maxRetries+1, waitTime)
+			time.Sleep(waitTime)
+			continue
+		}
+
+		// Retry on server errors
+		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+			if attempt == maxRetries {
+				return map[string]any{
+					"error": fmt.Sprintf("Server error after %d retries. HTTP %d: %s",
+						maxRetries, resp.StatusCode, string(bodyBytes)),
+					"output": nil,
+				}
+			}
+			fmt.Printf("Server error (attempt %d/%d). Waiting %v before retry...\n",
+				attempt+1, maxRetries+1, repository.ExponentialBackoff(attempt))
+			time.Sleep(repository.ExponentialBackoff(attempt))
+			continue
+		}
+
+		// Client errors (400–499) except 429 → don't retry
 		return map[string]any{
 			"error":  fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)),
 			"output": nil,
 		}
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return map[string]any{"error": err.Error(), "output": nil}
+	return map[string]any{
+		"error":  fmt.Sprintf("Max retries (%d) exceeded", maxRetries),
+		"output": nil,
 	}
-
-	var response repository.Response
-	if err = json.Unmarshal(bodyBytes, &response); err != nil {
-		return map[string]any{"error": err.Error(), "output": nil}
-	}
-
-	// Extract both text and function calls (like analysis agent)
-	output := []map[string]any{}
-
-	for _, cand := range response.Candidates {
-		for _, part := range cand.Content.Parts {
-			if part.Text != "" {
-				output = append(output, map[string]any{
-					"type": "text",
-					"data": part.Text,
-				})
-			}
-			if part.FunctionCall != nil {
-				output = append(output, map[string]any{
-					"type": "functionCall",
-					"name": part.FunctionCall.Name,
-					"args": part.FunctionCall.Args,
-				})
-			}
-		}
-	}
-
-	// Add the model's response to chat history (like analysis agent)
-	if len(response.Candidates) > 0 && len(response.Candidates[0].Content.Parts) > 0 {
-		parts := []map[string]any{}
-
-		for _, part := range response.Candidates[0].Content.Parts {
-			if part.Text != "" {
-				parts = append(parts, map[string]any{
-					"text": part.Text,
-				})
-			}
-			if part.FunctionCall != nil {
-				parts = append(parts, map[string]any{
-					"functionCall": map[string]any{
-						"name": part.FunctionCall.Name,
-						"args": part.FunctionCall.Args,
-					},
-				})
-			}
-		}
-
-		if len(parts) > 0 {
-			ChatHistory = append(ChatHistory, map[string]any{
-				"role":  response.Candidates[0].Content.Role,
-				"parts": parts,
-			})
-		}
-	}
-
-	c.Metadata.LastActive = time.Now()
-
-	return map[string]any{"error": nil, "output": output}
 }
 
 // executeCoderFunction executes a coder capability based on the function name.
@@ -505,39 +576,58 @@ func ReadFiles(args map[string]any) map[string]any {
 		}
 		defer file.Close()
 
+		// Read all lines first
 		scanner := bufio.NewScanner(file)
-		chunks := []map[string]any{}
-
-		var builder strings.Builder
-		lineCount := 0
-		chunkSize := 40 // number of lines per chunk
-
+		var lines []string
 		for scanner.Scan() {
-			line := scanner.Text()
-			builder.WriteString(line)
-			builder.WriteString("\n")
-			lineCount++
-
-			if lineCount%chunkSize == 0 {
-				chunks = append(chunks, map[string]any{
-					"start":   lineCount - chunkSize + 1,
-					"end":     lineCount,
-					"content": builder.String(),
-				})
-				builder.Reset()
-			} else {
-				// snapshot for progressive reading
-				chunks = append(chunks, map[string]any{
-					"start":   lineCount - (lineCount % chunkSize) + 1,
-					"end":     lineCount,
-					"content": builder.String(),
-				})
-			}
+			lines = append(lines, scanner.Text())
 		}
+
+		// Don't chunk unless necessary - send complete small files
 
 		if err := scanner.Err(); err != nil {
 			readFiles[fileName] = fmt.Sprintf("Error reading file: %v", err)
 			continue
+		}
+
+		// Create proper chunks (non-overlapping)
+		chunks := []map[string]any{}
+		chunkSize := 40
+		if len(lines) < 100 {
+			chunks = []map[string]any{{
+				"start":   1,
+				"end":     len(lines),
+				"content": strings.Join(lines, "\n"),
+			}}
+		} else {
+			for i := 0; i < len(lines); i += chunkSize {
+				end := i + chunkSize
+				if end > len(lines) {
+					end = len(lines)
+				}
+
+				// Build chunk content
+				var chunkContent strings.Builder
+				for j := i; j < end; j++ {
+					chunkContent.WriteString(lines[j])
+					chunkContent.WriteString("\n")
+				}
+
+				chunks = append(chunks, map[string]any{
+					"start":   i + 1,
+					"end":     end,
+					"content": chunkContent.String(),
+				})
+			}
+
+			// Handle empty file edge case
+			if len(lines) == 0 {
+				chunks = append(chunks, map[string]any{
+					"start":   1,
+					"end":     0,
+					"content": "",
+				})
+			}
 		}
 
 		readFiles[fileName] = chunks
@@ -550,134 +640,309 @@ func ReadFiles(args map[string]any) map[string]any {
 
 	return map[string]any{"error": nil, "output": readFiles}
 }
-
-// ListDirectory lists all files and subdirectories in a given directory path.
-func ListDirectory(data map[string]any) map[string]any {
-	path, ok := data["path"].(string)
-	if !ok {
-		return map[string]any{"error": "path is required"}
-	}
-
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to list directory: %v", err)}
-	}
-
-	var fileNames []string
-	for _, entry := range entries {
-		fileNames = append(fileNames, entry.Name())
-	}
-
-	return map[string]any{
-		"status":  "completed",
-		"entries": fileNames,
-	}
-}
-
-// DeleteFileOrDir deletes a file or directory at the specified path.
-func DeleteFileOrDir(data map[string]any) map[string]any {
-	text, ok := data["text"].(string)
+func ExecuteCommands(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
 	if ok {
-		fmt.Printf("CODER: %s", text)
-	}
-	path, ok := data["path"].(string)
-	if !ok {
-		return map[string]any{"error": "path is required"}
+		fmt.Println(text)
 	}
 
-	err := os.RemoveAll(path)
+	// Get current working directory
+	wd, err := os.Getwd()
 	if err != nil {
-		return map[string]any{"error": fmt.Sprintf("failed to delete: %v", err)}
+		return map[string]any{"error": err.Error()}
+	}
+
+	// Extract command
+	cmdStr, ok := args["command"].(string)
+	if !ok || cmdStr == "" {
+		return map[string]any{"error": "Invalid command"}
+	}
+
+	// Extract arguments (as array instead of a single string)
+	var argList []string
+	if rawArgs, ok := args["arguments"]; ok {
+		switch v := rawArgs.(type) {
+		case string:
+			// split on spaces if user passed a string
+			if v != "" {
+				argList = strings.Fields(v)
+			}
+		case []any:
+			for _, a := range v {
+				if s, ok := a.(string); ok {
+					argList = append(argList, s)
+				}
+			}
+		}
+	}
+
+	// Handle `cd` separately
+	if cmdStr == "cd" {
+		if len(argList) == 0 {
+			return map[string]any{"error": "cd requires a path"}
+		}
+		newDir := argList[0]
+		if !filepath.IsAbs(newDir) {
+			newDir = filepath.Join(wd, newDir)
+		}
+		if err := os.Chdir(newDir); err != nil {
+			return map[string]any{"error": fmt.Sprintf("failed to change directory: %v", err)}
+		}
+		return map[string]any{"message": fmt.Sprintf("Changed directory to %s", newDir)}
+	}
+
+	// Build command properly
+	cmd := exec.Command(cmdStr, argList...)
+	cmd.Dir = wd
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+
+	log.Default().Printf("Running command in %s: %s %v\n", wd, cmdStr, argList)
+
+	err = cmd.Run()
+	if err != nil {
+		return map[string]any{
+			"error": fmt.Sprintf("command failed: [%s %v] %v || CONSOLE/TERMINAL:%v",
+				cmdStr, argList, err, stderrBuf.String()),
+		}
 	}
 
 	return map[string]any{
-		"status": "completed",
-		"output": fmt.Sprintf("Deleted successfully at %s", path),
+		"message": "Command executed successfully",
+		"output":  stdoutBuf.String(),
 	}
 }
 
 // EditFile edits a file at a given path.
 // Piece Table - what is it ??
-
 func EditFile(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok {
-		fmt.Printf("CODER: %s", text)
+		fmt.Printf("CODER: %s\n", text)
 	}
-	filepath, ok := args["file_path"].(string)
+
+	filepathInput, ok := args["file_path"].(string)
 	if !ok {
 		return map[string]any{"error": "ERROR READING PATH"}
 	}
-	changes, ok := args["changes"].([]map[string]any)
+
+	changes, ok := args["changes"].([]interface{})
 	if !ok {
 		return map[string]any{"error": "REQUIRED CHANGES MAP"}
 	}
-	// Step 1: Load file
-	data, err := os.ReadFile(filepath)
-	if err != nil {
-		return map[string]any{"error": "ERROR READING FILE"}
-	}
-	pt := NewPieceTable(string(data))
 
-	// Step 2: Convert line+col into absolute position
-	lines := strings.Split(string(data), "\n")
-
-	posFromLineCol := func(line, col int) int {
-		pos := 0
-		for i := 0; i < line-1; i++ {
-			pos += len(lines[i]) + 1 // +1 for newline
-		}
-		return pos + col
+	// Convert changes into structured format
+	type changeInfo struct {
+		startLine int
+		startCol  int
+		endLine   int
+		endCol    int
+		operation string
+		content   string
 	}
 
-	for _, ch := range changes {
-		StartLine, ok := ch["start_line"].(int)
-		if !ok {
-			return map[string]any{"error": "ERROR READING StartLine"}
-		}
-		StartCol, ok := ch["start_col"].(int)
-		if !ok {
-			return map[string]any{"error": "ERROR READING StartCol"}
-		}
-		EndLine, ok := ch["end_line"].(int)
-		if !ok {
-			return map[string]any{"error": "ERROR READING EndLine"}
-		}
-		EndCol, ok := ch["end_col"].(int)
-		if !ok {
-			return map[string]any{"error": "ERROR READING EndCol"}
-		}
-		Operation, ok := ch["operation"].(string)
-		if !ok {
-			return map[string]any{"error": "ERROR READING Operation"}
-		}
-		Content, ok := ch["contents"].(string)
-		if !ok {
-			return map[string]any{"error": "ERROR READING Content"}
-		}
-		start := posFromLineCol(StartLine, StartCol)
-		end := posFromLineCol(EndLine, EndCol)
-
-		switch Operation {
-		case "delete":
-			pt.Delete(start, end-start)
-		case "replace":
-			pt.Delete(start, end-start)
-			pt.Insert(start, Content)
-		case "write":
-			pt.Insert(start, Content)
+	toInt := func(v any) (int, bool) {
+		switch val := v.(type) {
+		case float64:
+			return int(val), true
+		case int:
+			return val, true
 		default:
-			return map[string]any{"error": "UNKNOWN OPERATIONS"}
+			return 0, false
 		}
 	}
 
-	// Step 3: Save back to file
-	newContent := pt.String()
-	err = os.WriteFile(filepath, []byte(newContent), 0644)
+	var processedChanges []changeInfo
+	for _, c := range changes {
+		ch, ok := c.(map[string]any)
+		if !ok {
+			return map[string]any{"error": "INVALID CHANGE FORMAT"}
+		}
+
+		startLine, _ := toInt(ch["start_line_number"])
+		startCol, _ := toInt(ch["start_line_col"])
+		endLine, _ := toInt(ch["end_line_number"])
+		endCol, _ := toInt(ch["end_line_col"])
+		operation, _ := ch["operation"].(string)
+		content, _ := ch["content"].(string)
+
+		processedChanges = append(processedChanges, changeInfo{
+			startLine: startLine,
+			startCol:  startCol,
+			endLine:   endLine,
+			endCol:    endCol,
+			operation: operation,
+			content:   content,
+		})
+	}
+
+	// Sort changes by start line & col (ascending, so streaming works correctly)
+	sort.Slice(processedChanges, func(i, j int) bool {
+		if processedChanges[i].startLine == processedChanges[j].startLine {
+			return processedChanges[i].startCol < processedChanges[j].startCol
+		}
+		return processedChanges[i].startLine < processedChanges[j].startLine
+	})
+
+	// Prepare temp file with same extension
+	ext := filepath.Ext(filepathInput)
+	tmpFile := fmt.Sprintf("%s_%d%s", strings.TrimSuffix(filepathInput, ext), time.Now().UnixNano(), ext)
+
+	inFile, err := os.Open(filepathInput)
 	if err != nil {
-		return map[string]any{"error": "UNABLE TO WRITE THE DATA IN FILE"}
-	} else {
-		return map[string]any{"output": "Successfully Written The content you provided"}
+		return map[string]any{"error": "CANNOT OPEN INPUT FILE"}
+	}
+	defer inFile.Close()
+
+	outFile, err := os.Create(tmpFile)
+	if err != nil {
+		return map[string]any{"error": "CANNOT CREATE TEMP FILE"}
+	}
+	defer outFile.Close()
+
+	scanner := bufio.NewScanner(inFile)
+	writer := bufio.NewWriter(outFile)
+
+	currentLine := 1
+	changeIdx := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// If there are changes relevant to this line
+		for changeIdx < len(processedChanges) &&
+			processedChanges[changeIdx].startLine <= currentLine &&
+			processedChanges[changeIdx].endLine >= currentLine {
+
+			change := processedChanges[changeIdx]
+
+			switch change.operation {
+			case "delete":
+				if currentLine >= change.startLine && currentLine <= change.endLine {
+					// Skip writing this range
+					if currentLine == change.endLine {
+						changeIdx++
+					}
+					goto nextLine
+				}
+			case "replace":
+				if currentLine == change.startLine && currentLine == change.endLine {
+					newLine := line[:change.startCol] + change.content + line[change.endCol:]
+					_, _ = writer.WriteString(newLine + "\n")
+					changeIdx++
+					goto nextLine
+				}
+			case "write":
+				if currentLine == change.startLine {
+					newLine := line[:change.startCol] + change.content + line[change.startCol:]
+					_, _ = writer.WriteString(newLine + "\n")
+					changeIdx++
+					goto nextLine
+				}
+			}
+		}
+
+		// Normal write if no changes applied
+		_, _ = writer.WriteString(line + "\n")
+
+	nextLine:
+		currentLine++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return map[string]any{"error": "ERROR SCANNING FILE"}
+	}
+
+	// Flush writer
+	_ = writer.Flush()
+
+	// Replace original file with edited file
+	_ = os.Remove(filepathInput)
+	_ = os.Rename(tmpFile, filepathInput)
+
+	return map[string]any{"output": "Successfully written the content you provided"}
+}
+
+// GetProjectStructure returns the project structure as a string, ignoring files and directories specified in .gitignore.
+// If a .gitignore file is not found, it uses a default ignore list.
+// It takes the project path as input.
+func GetProjectStructure(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if ok && text != "" {
+		fmt.Println(text)
+	}
+
+	loadGitIgnore()
+	path := args["path"].(string)
+	var builder strings.Builder
+	builder.WriteString(path + "\n")
+	err := getProjectStructureRecursive(path, "", &builder)
+	if err != nil {
+		return map[string]any{"error": err, "output": nil}
+	}
+	fmt.Println(builder.String())
+	if builder.String() == "." || builder.String() == "" {
+		return map[string]any{"error": nil, "output": "<empty directory>"}
+	}
+	return map[string]any{"error": nil, "output": builder.String()}
+}
+
+func getProjectStructureRecursive(path string, prefix string, builder *strings.Builder) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+
+	for i, entry := range entries {
+		entryPath := filepath.Join(path, entry.Name())
+
+		// skip ignored entries
+		if ignoreMatcher != nil {
+			relPath, _ := filepath.Rel(".", entryPath)
+			if ignoreMatcher.MatchesPath(relPath) {
+				continue
+			}
+		}
+		if defaultIgnore[entry.Name()] {
+			// ✅ Skip this directory and its contents completely
+			if entry.IsDir() {
+				continue
+			}
+		}
+
+		// draw branch
+		connector := "├──"
+		if i == len(entries)-1 {
+			connector = "└──"
+		}
+		builder.WriteString(prefix + connector + " " + entry.Name() + "\n")
+
+		// recursively descend
+		if entry.IsDir() {
+			subPrefix := prefix
+			if i == len(entries)-1 {
+				subPrefix += "    "
+			} else {
+				subPrefix += "│   "
+			}
+			// 🚫 Don't go inside ignored directories
+			if !defaultIgnore[entry.Name()] {
+				err := getProjectStructureRecursive(entryPath, subPrefix, builder)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func loadGitIgnore() {
+	if _, err := os.Stat(".gitignore"); err == nil {
+		ignoreMatcher, _ = gitignore.CompileIgnoreFile(".gitignore")
 	}
 }
 func ExitProcess(args map[string]any) map[string]any {
@@ -812,25 +1077,82 @@ User is satisfied with the output.`,
 	},
 
 	{
-		Name:        DeleteFileOrDirName,
-		Description: DeleteFileOrDirDescription,
+		Name: "execute-command-in-terminal",
+		Description: `Run any valid shell/terminal command in the current working directory.
+Use this for:
+- File operations (create, delete, list, copy, move, rename, git).
+- Navigation (cd, ls).
+- Installing packages, running build tools.
+- Executing programs, checking versions, inspecting system state.
+- Running compilers/interpreters in syntax-check mode (e.g., g++ -fsyntax-only, python -m py_compile, node --check, go vet).
+This is especially useful for analyzing syntax errors in different programming languages.
+Always provide the command and arguments separately.
+
+Example:
+{ "command": "git", "arguments": ["commit", "-m", "testing through this tool"] }
+
+For syntax checking:
+{ "command": "g++", "arguments": ["-fsyntax-only", "file.cpp"] }
+{ "command": "python", "arguments": ["-m", "py_compile", "script.py"] }
+{ "command": "node", "arguments": ["--check", "app.js"] }`,
+
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "Additional context or instructions provided by the AI for the edit operation.",
+					Description: "Optional message or context string for logging/debugging.",
 				},
-				"path": {
+				"command": {
 					Type:        repository.TypeString,
-					Description: "The path of the file or directory to delete.",
+					Description: "Base command to execute (e.g., git, go, npm, python, ls).",
+				},
+				"arguments": {
+					Type: repository.TypeArray,
+					Items: &repository.Properties{
+						Type:        repository.TypeString,
+						Description: "Each argument passed separately (e.g., [\"commit\", \"-m\", \"msg\"]).",
+					},
+					Description: "Optional arguments for the command as an array.",
 				},
 			},
-			Required: []string{"text", "path"},
+			Required: []string{"command"},
+			Optional: []string{"text", "arguments"},
 		},
-		Service: DeleteFileOrDir,
-	},
 
+		Service: ExecuteCommands,
+
+		Return: repository.Return{
+			"error":   "string // Error message if the command failed, including stderr output.",
+			"output":  "string // Captured stdout (program output).",
+			"message": "string // Success message when execution completes.",
+		},
+	},
+	{
+		Name: "get-project-strucuture",
+		Description: `Returns the full directory structure of the project at the given path.
+		Call this before working on unfamiliar projects to understand where files are located.
+		Respects .gitignore to skip irrelevant files.`,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"path": {
+					Type:        repository.TypeString,
+					Description: "Path to the project directory (usually '.')",
+				},
+				"text": {
+					Type:        repository.TypeString,
+					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+				},
+			},
+			Required: []string{"path"},
+		},
+		Service: GetProjectStructure,
+		Return: repository.Return{
+			"error":  "string",
+			"output": "string",
+		},
+	},
 	{
 		Name:        EditFileFromName,
 		Description: EditFileDescription,
@@ -928,6 +1250,35 @@ If the files might already exist, first call 'read_files' to check.
 		},
 		Service: CreateFile,
 		Return:  repository.Return{"error": "string", "output": "string"},
+	},
+	{
+		Name: "read-files",
+		Description: `Reads the content of one or more files and returns them.
+Call this whenever you need to:
+- Check existing code before modifying it
+- Inspect dependencies or configuration
+- Validate if a file exists
+`,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"file_names": {
+					Type: repository.TypeArray,
+					Items: &repository.Properties{
+						Type:        repository.TypeString,
+						Description: "Name of the file to read",
+					},
+					Description: "List/Slice of file names to read",
+				},
+				"text": {
+					Type:        repository.TypeString,
+					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+				},
+			},
+			Required: []string{"file_names"},
+		},
+		Service: ReadFiles,
+		Return:  repository.Return{"error": "string", "output": "map[string]any"},
 	},
 }
 

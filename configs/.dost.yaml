@@ -1,4 +1,5 @@
 app:
+  #AIzaSyDlgLWaQC32mSix98xD39r2eVb_bWkGu_Y
   name: "dost"
   version: "1.0.0"
   port: 8080
@@ -8,32 +9,32 @@ logger:
   format: "json"
 
 ORCHESTRATOR:
-  API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
+  API_KEY: "AIzaSyD0Ax4SJ9cOHRWpacw7mo-jIf5LXbxp1R8"
   ORGANIZATION: "google"
-  MODEL: "gemini-2.5-flash"
+  MODEL: "gemini-2.0-flash"
 
 CODER:
-  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  API_KEY: "AIzaSyD0Ax4SJ9cOHRWpacw7mo-jIf5LXbxp1R8"
   ORGANIZATION: "google"
-  MODEL: "gemini-2.5-flash"
+  MODEL: "gemini-2.0-flash"
 
 CRITIC:
   API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
-  MODEL: "gemini-2.5-flash"
+  MODEL: "gemini-2.0-flash"
 
 EXECUTOR:
   API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
-  MODEL: "gemini-2.5-flash"
+  MODEL: "gemini-2.0-flash"
 
 PLANNER:
   API_KEY: "AIzaSyBXLOLaUQ2f1RLlCJtdnoWaX4eov3boj5k"
   ORGANIZATION: "google"
-  MODEL: "gemini-2.5-flash"
+  MODEL: "gemini-2.0-flash"
 
 ANALYSIS:
-  API_KEY: "AIzaSyBjMl6WI3bClsTlqYRorT5PAj1120dUaQ0"
+  API_KEY: "AIzaSyD0Ax4SJ9cOHRWpacw7mo-jIf5LXbxp1R8"
   ORGANIZATION: "google"
   MODEL: "gemini-2.0-flash"
 
