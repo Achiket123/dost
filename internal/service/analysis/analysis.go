@@ -599,6 +599,7 @@ func ReadFiles(args map[string]any) map[string]any {
 
 	return map[string]any{"error": nil, "output": readFiles}
 }
+
 func ExecuteCommands(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok {
@@ -944,44 +945,218 @@ Use this whenever you are missing essential details, such as:
 			"output": "string",
 		},
 	},
+
 	{
 		Name: "execute-command-in-terminal",
-		Description: `Run any valid shell/terminal command in the current working directory.
-Use this for:
-- File operations (create, delete, list, copy, move, rename, git).
-- Navigation (cd, ls).
-- Installing packages, running build tools.
-- Executing programs, checking versions, inspecting system state.
-- Running compilers/interpreters in syntax-check mode (e.g., g++ -fsyntax-only, python -m py_compile, node --check, go vet).
-This is especially useful for analyzing syntax errors in different programming languages.
-Always provide the command and arguments separately.
+		Description: `Execute ANY valid shell/terminal command with full system access in the current working directory.
+This tool provides COMPLETE command-line interface capabilities, enabling:
 
-Example:
-{ "command": "git", "arguments": ["commit", "-m", "testing through this tool"] }
+🚀 PROJECT MANAGEMENT & SETUP:
+- Initialize projects: npm init, cargo new, go mod init, django-admin startproject
+- Setup frameworks: create-react-app, vue create, ng new, rails new
+- Generate scaffolding: rails generate, ng generate, vue add
+- Project templates: cookiecutter, yeoman generators, custom templates
 
-For syntax checking:
-{ "command": "g++", "arguments": ["-fsyntax-only", "file.cpp"] }
-{ "command": "python", "arguments": ["-m", "py_compile", "script.py"] }
-{ "command": "node", "arguments": ["--check", "app.js"] }`,
+📁 FILE & DIRECTORY OPERATIONS:
+- Navigation: cd, ls, pwd, find, locate, which, whereis
+- File management: cp, mv, rm, mkdir, rmdir, touch, ln
+- Permissions: chmod, chown, chgrp, umask, getfacl, setfacl
+- Content operations: cat, head, tail, grep, sed, awk, sort, uniq
+- Archives: tar, zip, unzip, gzip, gunzip, 7z
+- File comparison: diff, cmp, comm
+
+🔧 DEVELOPMENT TOOLS & BUILD SYSTEMS:
+- Compilers: gcc, g++, clang, rustc, javac, tsc, babel
+- Interpreters: python, node, ruby, php, lua, perl
+- Build tools: make, cmake, ninja, gradle, maven, ant, bazel
+- Task runners: npm run, yarn, pnpm, gulp, grunt, webpack
+- Linters: eslint, pylint, rubocop, clippy, checkstyle
+- Formatters: prettier, black, gofmt, rustfmt, clang-format
+
+📦 PACKAGE MANAGEMENT:
+- Node.js: npm, yarn, pnpm (install, update, audit, publish)
+- Python: pip, pip3, pipenv, poetry, conda
+- Rust: cargo (build, test, publish, update)
+- Go: go get, go mod (download, tidy, vendor)
+- Ruby: gem, bundle
+- PHP: composer
+- Java: mvn, gradle
+- System packages: apt, yum, brew, choco, pacman
+
+🔄 VERSION CONTROL (GIT & OTHERS):
+- Git operations: init, clone, add, commit, push, pull, merge, rebase
+- Branch management: checkout, branch, switch, merge, rebase
+- History: log, show, diff, blame, reflog
+- Stashing: stash, stash pop, stash apply
+- Remote management: remote add, fetch, pull, push
+- Tags: tag, tag -a, tag -d
+- Other VCS: svn, hg, bzr
+
+🗄️ DATABASE OPERATIONS:
+- SQL databases: mysql, psql, sqlite3, sqlcmd
+- NoSQL: mongo, redis-cli, couchdb
+- Migrations: migrate, flyway, liquibase
+- Dumps & restores: mysqldump, pg_dump, mongodump
+
+🌐 NETWORK & API OPERATIONS:
+- HTTP requests: curl, wget, httpie
+- Network tools: ping, telnet, netstat, ss, lsof
+- DNS: nslookup, dig, host
+- Certificates: openssl, certbot
+- API testing: postman-cli, newman
+
+🐳 CONTAINERIZATION & ORCHESTRATION:
+- Docker: build, run, exec, ps, images, compose
+- Kubernetes: kubectl (apply, get, describe, logs, exec)
+- Container registries: docker push, docker pull
+- Orchestration: docker-compose, docker swarm
+
+☁️ CLOUD & INFRASTRUCTURE:
+- AWS CLI: aws s3, ec2, lambda, cloudformation
+- Azure CLI: az vm, az storage, az webapp
+- Google Cloud: gcloud compute, gsutil
+- Terraform: plan, apply, destroy
+- Ansible: ansible-playbook, ansible-vault
+
+🔍 SYSTEM MONITORING & DEBUGGING:
+- Process management: ps, top, htop, kill, killall, jobs
+- System info: uname, whoami, id, groups, env
+- Disk usage: df, du, fdisk, lsblk
+- Memory: free, vmstat
+- Performance: iostat, sar, strace, ltrace
+- Logs: journalctl, tail -f, grep logs
+
+🧪 TESTING & QUALITY ASSURANCE:
+- Unit tests: pytest, jest, go test, cargo test, rspec
+- Integration tests: newman, postman, cypress
+- Load testing: ab, siege, wrk, jmeter
+- Security scans: nmap, nikto, owasp-zap
+- Code coverage: coverage.py, nyc, gocov
+- Benchmarking: hyperfine, bench, criterion
+
+🔐 SECURITY & ENCRYPTION:
+- SSH operations: ssh, scp, ssh-keygen, ssh-add
+- Encryption: gpg, openssl, age
+- Certificates: certbot, openssl req, keytool
+- Password management: pass, 1password-cli
+- Security scanning: bandit, safety, audit
+
+📊 DATA PROCESSING & ANALYSIS:
+- Text processing: sed, awk, grep, sort, cut, tr
+- JSON/XML: jq, xmlstarlet, yq
+- CSV processing: csvkit, miller
+- Data conversion: pandoc, iconv
+- Statistical tools: R, octave
+
+🎯 AUTOMATION & SCRIPTING:
+- Shell scripting: bash, zsh, fish, powershell
+- Task scheduling: cron, at, systemd timers
+- Process automation: expect, tmux, screen
+- Workflow tools: github-cli, gitlab-ci
+
+🖥️ SYSTEM ADMINISTRATION:
+- Service management: systemctl, service, launchctl
+- User management: useradd, usermod, passwd, su, sudo
+- Network configuration: ifconfig, ip, route
+- Firewall: iptables, ufw, firewall-cmd
+- Package repositories: add-apt-repository, yum-config-manager
+
+🔧 LANGUAGE-SPECIFIC TOOLS:
+- Node.js: node, npm, yarn, npx, nvm
+- Python: python, pip, virtualenv, conda, jupyter
+- Go: go build, go test, go mod, go generate
+- Rust: cargo build, cargo test, cargo publish
+- Java: java, javac, maven, gradle
+- C/C++: gcc, g++, make, cmake, gdb
+- .NET: dotnet build, dotnet run, dotnet test
+- Ruby: ruby, gem, bundle, rails
+- PHP: php, composer, artisan
+
+⚡ PERFORMANCE & OPTIMIZATION:
+- Profiling: perf, gprof, valgrind, pprof
+- Benchmarking: time, hyperfine, ab
+- Memory analysis: valgrind, AddressSanitizer
+- Code optimization: compiler flags, link-time optimization
+
+🔄 CI/CD & DEPLOYMENT:
+- GitHub Actions: gh workflow, gh run
+- Jenkins: jenkins-cli
+- Docker deployment: docker deploy, docker service
+- Serverless: serverless deploy, sam deploy
+- Static sites: netlify, vercel
+
+SYNTAX CHECKING & VALIDATION:
+- C/C++: g++ -fsyntax-only, clang -fsyntax-only
+- Python: python -m py_compile, python -m flake8
+- JavaScript: node --check, eslint
+- Go: go vet, go fmt -n
+- Rust: cargo check
+- JSON: jq empty, python -m json.tool
+- YAML: yamllint, python -c "import yaml"
+- XML: xmllint --noout
+
+ADVANCED OPERATIONS:
+- Parallel processing: parallel, xargs -P
+- Process monitoring: watch, timeout
+- Binary analysis: objdump, nm, readelf, strings
+- System calls: strace, dtrace
+- Network debugging: tcpdump, wireshark-cli
+
+IMPORTANT USAGE NOTES:
+- This tool has FULL system access - use responsibly
+- Can modify files, install software, change system settings
+- Can access network resources and external APIs
+- Can start/stop services and processes
+- Always verify commands before execution in production
+- Use appropriate error handling and validation
+
+EXAMPLES:
+
+Project Setup:
+{ "command": "npx", "arguments": ["create-react-app", "my-app", "--template", "typescript"] }
+{ "command": "cargo", "arguments": ["new", "my-rust-project"] }
+{ "command": "django-admin", "arguments": ["startproject", "mysite"] }
+
+Development:
+{ "command": "npm", "arguments": ["install", "express", "cors", "dotenv"] }
+{ "command": "go", "arguments": ["mod", "init", "github.com/user/project"] }
+{ "command": "pip", "arguments": ["install", "-r", "requirements.txt"] }
+
+Git Operations:
+{ "command": "git", "arguments": ["clone", "https://github.com/user/repo.git"] }
+{ "command": "git", "arguments": ["add", ".", "&&", "git", "commit", "-m", "Initial commit"] }
+{ "command": "git", "arguments": ["push", "origin", "main"] }
+
+Testing & Quality:
+{ "command": "pytest", "arguments": ["tests/", "-v", "--coverage"] }
+{ "command": "eslint", "arguments": ["src/", "--fix"] }
+{ "command": "cargo", "arguments": ["test", "--release"] }
+
+System Operations:
+{ "command": "docker", "arguments": ["build", "-t", "myapp", "."] }
+{ "command": "systemctl", "arguments": ["start", "nginx"] }
+{ "command": "curl", "arguments": ["-X", "POST", "https://api.example.com/data"] }
+
+This tool is your gateway to the ENTIRE command-line ecosystem. Use it to automate, build, deploy, test, monitor, and manage any aspect of software development and system administration.`,
 
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "Optional message or context string for logging/debugging.",
+					Description: "Optional context message for logging, debugging, or providing additional information about the command execution.",
 				},
 				"command": {
 					Type:        repository.TypeString,
-					Description: "Base command to execute (e.g., git, go, npm, python, ls).",
+					Description: "The base command to execute. Can be any valid system command, tool, or executable available in the PATH or specified with full path.",
 				},
 				"arguments": {
 					Type: repository.TypeArray,
 					Items: &repository.Properties{
 						Type:        repository.TypeString,
-						Description: "Each argument passed separately (e.g., [\"commit\", \"-m\", \"msg\"]).",
+						Description: "Individual command arguments, flags, options, and parameters.",
 					},
-					Description: "Optional arguments for the command as an array.",
+					Description: "Array of command arguments. Each element should be a separate argument (proper shell escaping handled automatically).",
 				},
 			},
 			Required: []string{"command"},
@@ -991,9 +1166,9 @@ For syntax checking:
 		Service: ExecuteCommands,
 
 		Return: repository.Return{
-			"error":   "string // Error message if the command failed, including stderr output.",
-			"output":  "string // Captured stdout (program output).",
-			"message": "string // Success message when execution completes.",
+			"error":   "string // Detailed error message including command, arguments, exit code, and stderr output if execution fails.",
+			"output":  "string // Complete stdout output from the executed command.",
+			"message": "string // Success confirmation message with command execution details.",
 		},
 	},
 }

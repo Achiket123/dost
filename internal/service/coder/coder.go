@@ -61,19 +61,6 @@ const coderName = "coder"
 
 const coderVersion = "0.1.0"
 
-// File Handling Structures
-type Piece struct {
-	Buffer string // "original" or "add"
-	Start  int
-	Length int
-}
-
-type PieceTable struct {
-	Original string  // immutable original buffer
-	Add      string  // append-only buffer
-	Pieces   []Piece // sequence of text slices
-}
-
 // args must and only contains "query"
 func (p *AgentCoder) Interaction(args map[string]any) map[string]any {
 	ChatHistory = append(ChatHistory, map[string]any{
@@ -954,101 +941,6 @@ func ExitProcess(args map[string]any) map[string]any {
 	fmt.Println("--- Task completed successfully! Exiting...")
 	return map[string]any{"error": nil, "output": "Task Completed Successfully", "exit": true}
 
-}
-
-// --------------------------------------------------//
-//
-//									//
-//	IMPORTANT						//
-//									//
-//
-// --------------------------------------------------//
-func NewPieceTable(content string) *PieceTable {
-	return &PieceTable{
-		Original: content,
-		Add:      "",
-		Pieces:   []Piece{{Buffer: "original", Start: 0, Length: len(content)}},
-	}
-}
-
-func (pt *PieceTable) String() string {
-	var builder strings.Builder
-	for _, piece := range pt.Pieces {
-		switch piece.Buffer {
-		case "original":
-			builder.WriteString(pt.Original[piece.Start : piece.Start+piece.Length])
-		case "add":
-			builder.WriteString(pt.Add[piece.Start : piece.Start+piece.Length])
-		}
-	}
-	return builder.String()
-}
-
-func (pt *PieceTable) Insert(pos int, text string) {
-	// Append to add buffer
-	addStart := len(pt.Add)
-	pt.Add += text
-
-	newPiece := Piece{Buffer: "add", Start: addStart, Length: len(text)}
-
-	offset := 0
-	for i, piece := range pt.Pieces {
-		if offset+piece.Length >= pos {
-			// Found the piece where insertion happens
-			relPos := pos - offset
-
-			// Split piece into before + new + after
-			before := Piece{Buffer: piece.Buffer, Start: piece.Start, Length: relPos}
-			after := Piece{Buffer: piece.Buffer, Start: piece.Start + relPos, Length: piece.Length - relPos}
-
-			newPieces := []Piece{}
-			if before.Length > 0 {
-				newPieces = append(newPieces, before)
-			}
-			newPieces = append(newPieces, newPiece)
-			if after.Length > 0 {
-				newPieces = append(newPieces, after)
-			}
-
-			pt.Pieces = append(pt.Pieces[:i], append(newPieces, pt.Pieces[i+1:]...)...)
-			return
-		}
-		offset += piece.Length
-	}
-}
-
-func (pt *PieceTable) Delete(start, length int) {
-	end := start + length
-	offset := 0
-	newPieces := []Piece{}
-
-	for _, piece := range pt.Pieces {
-		if offset+piece.Length <= start || offset >= end {
-			// Outside deletion range, keep piece
-			newPieces = append(newPieces, piece)
-		} else {
-			// Overlaps deletion range
-			relStart := max(0, start-offset)
-			relEnd := min(piece.Length, end-offset)
-
-			if relStart > 0 {
-				newPieces = append(newPieces, Piece{
-					Buffer: piece.Buffer,
-					Start:  piece.Start,
-					Length: relStart,
-				})
-			}
-			if relEnd < piece.Length {
-				newPieces = append(newPieces, Piece{
-					Buffer: piece.Buffer,
-					Start:  piece.Start + relEnd,
-					Length: piece.Length - relEnd,
-				})
-			}
-		}
-		offset += piece.Length
-	}
-	pt.Pieces = newPieces
 }
 
 var CoderCapabilities = []repository.Function{

@@ -2,7 +2,6 @@ package app
 
 import (
 	"dost/internal/config"
-	"dost/internal/service"
 	"dost/internal/service/orchestrator"
 	"fmt"
 	"os"
@@ -91,8 +90,6 @@ func InitConfig() {
 		os.Exit(1)
 	}
 	Cfg = cfg
-
-	service.InitializeCache()
 
 	fmt.Println("DOST initialized successfully")
 }
