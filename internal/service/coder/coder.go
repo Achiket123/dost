@@ -364,14 +364,6 @@ func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 	}
 }
 
-// executeCoderFunction executes a coder capability based on the function name.
-func (c *AgentCoder) executeCoderFunction(funcName string, args map[string]any) map[string]any {
-	capabilities := GetCoderCapabilitiesMap()
-	if capability, exists := capabilities[funcName]; exists {
-		return capability.Service(args)
-	}
-	return nil
-}
 
 // ToMap serializes the AgentCoder into a map.
 func (c *AgentCoder) ToMap() map[string]any {

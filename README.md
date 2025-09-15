@@ -18,6 +18,21 @@ DOST is an autonomous AI coding assistant meticulously engineered to surpass the
 *   **Streamlined Deployment & DevOps:** DOST auto-generates deployment configurations for platforms like Docker and Kubernetes, automating CI/CD pipelines for seamless releases.
 *   **Continuous Learning & Adaptation:** DOST continuously learns from user interactions, emerging technologies, and codebase analysis, adapting its strategies for optimal performance and effectiveness.
 
+## Agent Capabilities
+
+*   **Analysis Agent:** Performs in-depth task analysis and validation. It identifies potential issues, clarifies requirements, and ensures the feasibility of proposed solutions. It excels at:
+    *   Interpreting error logs and stack traces.
+    *   Assessing project structure and identifying potential areas of improvement.
+    *   Detecting dependency conflicts and suggesting resolutions.
+    *   Identifying performance bottlenecks and recommending optimization strategies.
+    *   Recognizing security vulnerabilities and proposing remediation measures.
+*   **Coder Agent:** Implements code based on specifications. It generates clean, efficient, and well-documented code, adhering to best practices and project standards. It is skilled at:
+    *   Writing new code from scratch based on detailed requirements.
+    *   Modifying existing code to fix bugs or add new features.
+    *   Refactoring code to improve readability, maintainability, and performance.
+    *   Generating unit tests and integration tests to ensure code quality.
+    *   Creating documentation to explain code functionality and usage.
+
 ## :brain: Intelligent Inference Engine
 
 *   **Project Context Detection:** Automatically detects project context from minimal signals (e.g., file types, package dependencies).
@@ -38,21 +53,48 @@ DOST utilizes universal project templates for consistency and rapid development.
 
 ## :hammer: Getting Started
 
-[Instructions on how to install and use DOST will be added here]
+To get started with DOST, follow these steps:
+
+1.  **Prerequisites:**
+    *   Go (version 1.20 or higher)
+    *   Git
+    *   Docker (optional, for containerization)
+2.  **Installation:**
+    ```bash
+    go install github.com/your-username/dost@latest
+    ```
+    *Replace `github.com/your-username/dost` with the actual repository path.*
+3.  **Configuration:**
+    *   Create a `config.yaml` file in the root directory. (See example config below)
+
+Example `config.yaml`:
+
+```yaml
+# config.yaml
+api_key: "YOUR_API_KEY" #Required
+model: "gpt-4"          #Optional
+
+#Optional settings
+settings:
+    temp_dir: "/tmp/dost"  #Temporary directory
+    log_level: "info"
+```
 
 ## :handshake: Contributing
 
-[Contribution guidelines will be added here]
+Contributions are welcome! Here are several ways you can contribute:
+
+*   **Report Bugs:** Submit bug reports through GitHub Issues.
+*   **Suggest Enhancements:** Share your ideas for new features or improvements.
+*   **Write Code:** Contribute code fixes or new features by submitting a pull request.
+
+When contributing code, please follow these guidelines:
+
+*   Ensure your code adheres to the project's coding standards.
+*   Write clear, concise commit messages.
+*   Include relevant tests for your changes.
+*   Document any new or modified functionality.
 
 ## :copyright: License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-s performance and capabilities.
-
-## Contributing
-
-[Contribution guidelines will be added here]
-
-## License
-
-[License information will be added here]

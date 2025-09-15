@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -50,15 +51,168 @@ type Task struct {
 
 type AgentOrchestrator repository.Agent
 
+type InitialContext struct {
+	OS             string
+	Arch           string
+	User           string
+	Shell          string
+	CWD            string
+	GoVersion      string
+	InstalledTools []string
+	EnvVars        map[string]string
+	ProjectFiles   []string
+	ProjectType    string
+	GitBranch      string
+	InternetAccess bool
+	AgentRole      string
+	Capabilities   []string
+	Timezone       string
+	SessionID      string
+}
+
+func GetInitialContext() InitialContext {
+	ctx := InitialContext{
+		OS:             runtime.GOOS,
+		Arch:           runtime.GOARCH,
+		User:           os.Getenv("USERNAME"),
+		Shell:          detectDefaultShell(),
+		CWD:            mustGetWorkingDir(),
+		GoVersion:      runtime.Version(),
+		InstalledTools: detectTools([]string{"git", "docker", "go", "npm", "python"}),
+		EnvVars:        getImportantEnvVars(),
+		ProjectFiles:   scanProjectFiles(),
+		ProjectType:    detectProjectType(),
+		GitBranch:      getGitBranch(),
+		InternetAccess: checkInternet(),
+		Timezone:       getLocalTimezone(),
+		SessionID:      generateSessionID(),
+	}
+	return ctx
+}
+
+func detectDefaultShell() string {
+	if runtime.GOOS == "windows" {
+		// prefer PowerShell if present
+		if _, err := exec.LookPath("powershell"); err == nil {
+			return "powershell"
+		}
+		return "cmd"
+	}
+	return os.Getenv("SHELL")
+}
+
+func mustGetWorkingDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return dir
+}
+
+func detectTools(tools []string) []string {
+	var found []string
+	for _, tool := range tools {
+		if _, err := exec.LookPath(tool); err == nil {
+			found = append(found, tool)
+		}
+	}
+	return found
+}
+
+func getImportantEnvVars() map[string]string {
+	keys := []string{"PATH", "GOROOT", "GOPATH", "JAVA_HOME"}
+	env := make(map[string]string)
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			env[k] = v
+		}
+	}
+	return env
+}
+
+func scanProjectFiles() []string {
+	files := []string{}
+	filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			if strings.HasSuffix(path, ".go") ||
+				path == "go.mod" || path == "package.json" || path == "requirements.txt" ||
+				path == "Dockerfile" || path == "README.md" {
+				files = append(files, path)
+			}
+		}
+		return nil
+	})
+	return files
+}
+
+func detectProjectType() string {
+	if _, err := os.Stat("go.mod"); err == nil {
+		return "Go project"
+	}
+	if _, err := os.Stat("package.json"); err == nil {
+		return "Node.js project"
+	}
+	if _, err := os.Stat("requirements.txt"); err == nil {
+		return "Python project"
+	}
+	return "Unknown"
+}
+
+func getGitBranch() string {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func checkInternet() bool {
+	cmd := exec.Command("ping", "-c", "1", "8.8.8.8")
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("ping", "-n", "1", "8.8.8.8")
+	}
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+func getLocalTimezone() string {
+	_, tz := time.Now().Zone()
+	return fmt.Sprintf("%d min offset", tz/60)
+}
+
+func generateSessionID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
 func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
-	ChatHistory = append(ChatHistory, map[string]any{
-		"role": "user",
-		"parts": []map[string]any{
-			{
-				"text": args["query"],
+	InitialContext := GetInitialContext()
+	InitialContextBytes, err := json.Marshal(InitialContext)
+	if err != nil {
+		return map[string]any{"error": "Unable to get initial context"}
+
+	}
+
+	ChatHistory = append(ChatHistory, []map[string]any{
+		{"role": "user",
+			"parts": []map[string]any{
+				{
+					"text": string(InitialContextBytes),
+				},
 			},
 		},
-	})
+		{
+
+			"role": "user",
+			"parts": []map[string]any{
+				{
+					"text": args["query"],
+				},
+			},
+		},
+	}...)
 
 	for {
 		// fmt.Println("Current ChatHistory:", ChatHistory)
@@ -913,39 +1067,91 @@ User is satisfied with the output.`,
 	},
 	{
 		Name: "write-file",
-		Description: `Overwrites the entire content of an existing file.
-		It opens the file in append mode.
-	Always call 'read_files' first to retrieve existing content before making modifications.`,
+		Description: `Write or overwrite file contents with precise control over offsets and data placement.  
+This tool provides COMPLETE file manipulation capabilities, enabling:
+
+📝 BASIC FILE OPERATIONS:
+- Full overwrite: Replace the entire content of an existing file with new data.
+- Append mode: Add content at the end of the file by setting offset equal to file size.
+- Partial overwrite: Modify specific portions of a file without affecting the rest.
+- Sparse file creation: Insert padding/zero-bytes automatically when offset exceeds file size.
+
+📂 USE CASES:
+- Create or update configuration files (e.g., .env, config.json, settings.yaml).
+- Maintain logs, append new entries without altering existing data.
+- Replace corrupted sections of a binary/text file.
+- Write test fixtures or datasets programmatically.
+- Manage source code updates while preserving line/byte positions.
+
+⚙️ ADVANCED FEATURES:
+- Multi-file support: Operate on multiple files in one call.
+- Precise byte-level control: Offsets allow low-level file manipulations.
+- Data replacement: Insert/overwrite any part of a file with new content slices.
+- Sparse handling: Automatically generates empty byte padding for large jumps in offset.
+- Integration: Always call 'read_files' first to load current file state before modification.
+
+🚫 SAFETY & USAGE NOTES:
+- ⚠️ Be careful when overwriting: it PERMANENTLY replaces existing file content.
+- Always confirm offsets and file names to avoid unintentional data loss.
+- Ensure file extensions match expected format (.txt, .json, .go, .py, etc.).
+- Using offsets incorrectly can corrupt structured files (e.g., JSON, XML).
+- Use sparse file creation only if downstream systems can handle them properly.
+
+📊 COMMON PATTERNS:
+- Full overwrite:
+  { "file_names": ["config.json"], "contents": ["{ \"debug\": true }"], "offsets": [0] }
+
+- Append to file:
+  { "file_names": ["log.txt"], "contents": ["New log entry"], "offsets": [<current_file_size>] }
+
+- Overwrite at position:
+  { "file_names": ["data.bin"], "contents": ["FF00AA"], "offsets": [128] }
+
+- Create sparse file:
+  { "file_names": ["huge.dat"], "contents": ["End Marker"], "offsets": [1000000000] }
+
+🖥️ EXAMPLES:
+- Replace entire README.md with new content.
+- Append a new migration entry into a SQL file.
+- Patch a corrupted section of a binary executable.
+- Programmatically generate structured text/data files.
+
+This tool is your gateway to precise file manipulation and content management. Use it to create, append, overwrite, and manage files across any project lifecycle with full byte-level control.`,
+
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"file_names": {
 					Type:        repository.TypeArray,
 					Items:       &repository.Properties{Type: repository.TypeString},
-					Description: "Name of the file to create (with extension)",
+					Description: "List of file names (with extensions) where operations will be performed. Each file corresponds to matching index of 'contents' and 'offsets'.",
 				},
 				"contents": {
 					Type:        repository.TypeArray,
 					Items:       &repository.Properties{Type: repository.TypeString},
-					Description: "Full content to write in the new file",
+					Description: "Full content strings to write into files. Each entry aligns with 'file_names' and 'offsets'.",
 				},
 				"offsets": {
 					Type:  repository.TypeArray,
 					Items: &repository.Properties{Type: repository.TypeNumber},
-					Description: `The number represents a byte offset from the beginning of the file. By setting this value, you can:
-If the offsets parameter is not provided, the function will default to overwriting the entire file.
-Append Content: If you set the offset to the current size of the file, you can append new content to the end.
-
-Overwrite Content: If you set the offset to a position within the existing file, any new content will overwrite the old content starting from that point.
-
-Create Sparse Files: If you set the offset to a position beyond the current end of the file, the operating system will create a "sparse file" by inserting zero bytes as padding until the specified offset is reached.`,
+					Description: `Array of byte offsets controlling write position for each file:
+- Omit or set 0 → Overwrite entire file from beginning.
+- Equal to file size → Append new content at the end.
+- Within file size → Overwrite content starting from that offset.
+- Beyond file size → Create sparse file with zero-padding.`,
 				},
 			},
 			Required: []string{"file_names", "contents", "offsets"},
 		},
+
 		Service: WriteFile,
-		Return:  repository.Return{"error": "string", "output": "string"},
+
+		Return: repository.Return{
+			"error":  "string // Error details if write fails (invalid path, permissions, etc.).",
+			"output": "string // Confirmation details such as bytes written, offsets applied, and file names affected.",
+		},
 	},
+
 	{
 		Name: "ask-an-agent",
 		Description: `Route a task to a specific agent for processing.
