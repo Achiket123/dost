@@ -1,38 +1,69 @@
-# DOST - Developer Orchestrator System Tool
+# NEXUS - The Elite AI Coding Assistant
 
 ## Overview
-DOST is an autonomous AI agent designed to streamline software development workflows. It acts as a central intelligence and coordination hub, routing tasks to specialized agents and executing commands to achieve user objectives efficiently.
 
-## Core Capabilities
+NEXUS is an autonomous AI coding assistant engineered to match and exceed the capabilities of tools like Cursor, Claude Code, and Firebase Studio. It's designed for complete self-sufficiency in complex software development tasks, from initial project setup to production deployment. NEXUS embodies a 'Master Craftsman' mindset, striving for first-attempt success, zero-friction development, and production-ready code.
 
-*   **Direct Command Execution:** Executes standard CLI commands immediately for file operations, process management, network utilities, and system queries.
-*   **Intelligent Task Routing:**
-    *   **Analysis Agent:** Routes tasks requiring error log interpretation, project structure assessment, dependency conflict resolution, performance issue analysis, or security vulnerability identification.
-    *   **Coder Agent:** Routes tasks involving specific code requirements, file modifications, bug fixes, feature implementation, or code refactoring.
-    *   **Planner Agent:** Creates step-by-step execution plans for complex, multi-stage tasks.
-*   **Autonomous Operation:** Infers information from context, applies standard solutions, makes reasonable assumptions, and clarifies ambiguous requests with minimal user interruption.
-*   **Context Awareness:** Adapts behavior based on project type, development stage, user skill level, system environment, and tool availability.
+## Core Identity & Operational Philosophy
 
-## Key Features
+*   **Master Craftsman Mindset**:
+    *   First-Attempt Success: Solutions work perfectly on the first execution.
+    *   Zero-Friction Development: Eliminates unnecessary back-and-forth with intelligent inference.
+    *   Production-Ready Code: Output is maintainable, secure, and scalable.
+    *   Autonomous Intelligence: Makes smart decisions without constant guidance.
+    *   Context Mastery: Understands entire project ecosystems, not just individual files.
 
-*   **Parallel Processing:** Executes tasks concurrently (e.g., testing during building, documentation generation during compilation).
-*   **Intelligent Caching:** Remembers successful command sequences, caches analysis results, and reuses planning outputs.
-*   **Failure Recovery:** Retries failed commands, selects alternative approaches, and provides clear failure explanations with recovery options.
-*   **Performance Monitoring:** Tracks task completion times, monitors agent efficiency, and optimizes routing decisions.
+## Intelligent Inference Engine
 
-## Usage
+*   **Project Detection & Auto-Configuration**: Automatically detects project context from minimal signals (e.g., file types, package dependencies) and configures the environment accordingly.
+*   **Smart Defaults Matrix**: Applies intelligent defaults for versions, architecture (SOLID principles, clean architecture), security, performance, testing, and DevOps.
 
-DOST is designed to be a versatile tool for a wide range of development tasks. Simply provide a clear objective, and DOST will handle the rest, from analyzing the requirements to executing the necessary steps.
+## Autonomous Task Execution Framework
 
-## Examples
+*   **Level 1: Instant Commands (0-5 seconds)**: Executes immediately without analysis (e.g., Git operations, package management, build commands, file operations, system queries).
+*   **Level 2: Smart Execution (5-30 seconds)**: Auto-configures and executes with intelligent defaults (e.g., project initialization, dependency resolution, build system configuration, environment setup, database schema generation).
+*   **Level 3: Complex Problem Solving (30 seconds - 5 minutes)**: Full analysis, planning, and implementation (e.g., multi-service architecture design, performance optimization, integration testing, security audits).
 
-*   `update the readme.md stating your capabilities and push it to github`
-*   `install the required dependencies`
-*   `run the tests`
+## Universal Project Templates
 
-## Communication
+NEXUS utilizes universal project templates for consistency and rapid development. Examples include:
 
-DOST provides progress updates, error reports with root cause analysis, success confirmations, and resource usage awareness.
+*   **Full-Stack Application Template** (Frontend, Backend, Infrastructure, Documentation, CI/CD)
+*   **Microservices Architecture Template** (API Gateway, User Service, Data Service, Notification Service, Shared Components)
+
+## Intelligent Code Generation
+
+*   **Language-Specific Excellence Standards**: Generates idiomatic and robust code for Go, TypeScript/Node.js, and other languages, including proper error handling, logging, and testing.
+*   **Auto-Configuration Systems**: Automatically configures databases (schema generation, migrations), CI/CD pipelines (GitHub Actions, etc.), and deployment environments.
+
+## Advanced Problem-Solving Capabilities
+
+*   **Error Resolution Matrix**: Diagnoses and resolves errors automatically using a comprehensive error pattern database.
+*   **Performance Optimization Engine**: Optimizes code for performance based on profiling and best practices (caching, compression, lazy loading, etc.).
+
+## Security-First Development
+
+*   **Auto-Security Implementation**: Implements security best practices automatically, including authentication, authorization, data protection, and infrastructure security.
+
+## Testing Automation
+
+*   **Comprehensive Test Generation**: Generates unit tests, integration tests, end-to-end tests, performance tests, and security tests based on code analysis.
+
+## Deployment & DevOps Automation
+
+*   **Multi-Platform Deployment**: Auto-generates deployment configurations for Docker, Kubernetes, and other platforms.
+
+## Critical Success Metrics
+
+*   Setup Speed: <60 seconds
+*   Code Quality: 95%+ first-attempt compilation success
+*   Error Resolution: 90%+ automatic error resolution
+*   Security Coverage: 100% security best practices implementation
+*   Test Coverage: 85%+ automatic test coverage generation
+
+## Continuous Learning System
+
+NEXUS continuously learns from user patterns, new technologies, success/failure rates, and codebase analysis to improve its performance and capabilities.
 
 ## Contributing
 
