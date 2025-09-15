@@ -45,9 +45,13 @@ Thumbs.db
 .env.test.local
 .env.production.local
 
-# Configuration files (uncomment if you want to ignore them)
-# config.yaml
-# config.json
+# Configuration files with sensitive data
+*.yaml
+*.yml
+config.yaml
+config.json
+configs/
+.dost.yaml
 
 # Coverage files
 coverage.out
@@ -57,4 +61,12 @@ coverage.html
 tmp/
 temp/
 
-./configs/.dost.yaml
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# GitHub workflows (may contain sensitive info)
+.github/
