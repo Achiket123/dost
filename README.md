@@ -44,6 +44,49 @@ DOST is an autonomous AI coding assistant meticulously engineered to surpass the
 *   **Level 2: Smart Execution (5-30 seconds):** Auto-configures and executes with intelligent defaults (e.g., project initialization, dependency resolution, build system configuration, environment setup, database schema generation).
 *   **Level 3: Complex Problem Solving (30 seconds - 5 minutes):** Full analysis, planning, and implementation (e.g., multi-service architecture design, performance optimization, integration testing, security audits).
 
+## :file_folder: Configuration
+
+DOST uses a configuration file to store settings. The file is located at `.dost.yaml` in the root directory or `configs/.dost.yaml` for development environment. Here are the configurable fields:
+
+### App Configuration
+
+*   `app.name`: The name of the application (default: dost).
+*   `app.version`: The version of the application (default: 1.0.0).
+*   `app.port`: The port the application listens on (default: 8080).
+*   `app.debug`: Enable debug mode (default: false).
+
+### AI Configuration
+
+*   `ai.API_KEY`: The API key for the Gemini API. **Required**.
+*   `ai.ORG`: The organization for the Gemini API.
+*   `ai.MODEL`: The model to use for the Gemini API.
+*   `ai.CODER_URL`: URL for the coder service
+*   `ai.CODER_API`: API key for the coder service
+*   `ai.CODER_ORG`: Organization for the coder service
+*   `ai.PLANNER_URL`: URL for the planner service
+*   `ai.PLANNER_API`: API key for the planner service
+*   `ai.PLANNER_ORG`: Organization for the planner service
+*   `ai.ORCHESTRATOR_URL`: URL for the orchestrator service
+*   `ai.ORCHESTRATOR_API`: API key for the orchestrator service
+*   `ai.ORCHESTRATOR_ORG`: Organization for the orchestrator service
+*   `ai.CRITIC_URL`: URL for the critic service
+*   `ai.CRITIC_API`: API key for the critic service
+*   `ai.CRITIC_ORG`: Organization for the critic service
+*   `ai.EXECUTOR_URL`: URL for the executor service
+*   `ai.EXECUTOR_API`: API key for the executor service
+*   `ai.EXECUTOR_ORG`: Organization for the executor service
+*   `ai.KNOWLEDGE_URL`: URL for the knowledge service
+*   `ai.KNOWLEDGE_API`: API key for the knowledge service
+*   `ai.KNOWLEDGE_ORG`: Organization for the knowledge service
+*   `ai.TEMPERATURE`: The temperature for the Gemini API.
+*   `ai.MAX_TOKENS`: The maximum number of tokens for the Gemini API.
+*   `ai.TOP_P`: The top_p for the Gemini API.
+
+### Logger Configuration
+
+*   `logger.level`: The log level (default: info).
+*   `logger.format`: The log format (default: json).
+
 ## :file_folder: Universal Project Templates
 
 DOST utilizes universal project templates for consistency and rapid development. Examples include:
@@ -56,7 +99,7 @@ DOST utilizes universal project templates for consistency and rapid development.
 To get started with DOST, follow these steps:
 
 1.  **Prerequisites:**
-    *   Go (version 1.20 or higher)
+    *   Go (version 1.21 or higher)
     *   Git
     *   Docker (optional, for containerization)
 2.  **Installation:**
@@ -65,12 +108,12 @@ To get started with DOST, follow these steps:
     ```
     *Replace `github.com/your-username/dost` with the actual repository path.*
 3.  **Configuration:**
-    *   Create a `config.yaml` file in the root directory. (See example config below)
+    *   Create a `.dost.yaml` file in the root directory or `configs/.dost.yaml` for development environment. See example configurations below.
 
-Example `config.yaml`:
+Example `.dost.yaml` for production:
 
 ```yaml
-# config.yaml
+# .dost.yaml
 api_key: "YOUR_API_KEY" #Required
 model: "gpt-4"          #Optional
 
@@ -78,6 +121,24 @@ model: "gpt-4"          #Optional
 settings:
     temp_dir: "/tmp/dost"  #Temporary directory
     log_level: "info"
+```
+
+Example `configs/.dost.yaml` for development:
+
+```yaml
+# configs/.dost.yaml
+app:
+  name: "dost"
+  version: "1.0.0"
+  port: 8080
+  debug: true
+ai:
+  API_KEY: "YOUR_API_KEY"
+  ORG: "YOUR_ORG"
+  MODEL: "YOUR_MODEL"
+logger:
+  level: "info"
+  format: "json"
 ```
 
 ## :handshake: Contributing
