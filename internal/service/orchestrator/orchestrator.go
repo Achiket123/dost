@@ -78,7 +78,7 @@ func GetInitialContext() InitialContext {
 		Shell:          detectDefaultShell(),
 		CWD:            mustGetWorkingDir(),
 		GoVersion:      runtime.Version(),
-		InstalledTools: detectTools([]string{"git", "docker", "go", "npm", "python"}),
+		InstalledTools: detectTools(),
 		EnvVars:        getImportantEnvVars(),
 		ProjectFiles:   scanProjectFiles(),
 		ProjectType:    detectProjectType(),
@@ -109,13 +109,10 @@ func mustGetWorkingDir() string {
 	return dir
 }
 
-func detectTools(tools []string) []string {
+func detectTools() []string {
 	var found []string
-	for _, tool := range tools {
-		if _, err := exec.LookPath(tool); err == nil {
-			found = append(found, tool)
-		}
-	}
+	val := os.Getenv("PATH")
+	found = strings.Split(val, ";")
 	return found
 }
 
