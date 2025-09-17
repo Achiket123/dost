@@ -75,6 +75,7 @@ type AgentAnalysis repository.Agent
 
 // args must and only contains "query"
 func (p *AgentAnalysis) Interaction(args map[string]any) map[string]any {
+
 	ChatHistory = append(ChatHistory, map[string]any{
 		"role": "user",
 		"parts": []map[string]any{
@@ -926,25 +927,19 @@ Use this whenever you are missing essential details, such as:
 
 	{
 		Name: "exit-process",
-		Description: `When you feel that the task is completed always call this to exit the process.
-		Before calling this function make sure,
-		You have completed all the task.
-		You have fixed all the bugs.
-		User is satisfied with the output.
-		`,
+		Description: `When you feel that the task is fully completed, always call this function to exit the process.
+⚠️ Important:
+- Before calling, make sure all steps are done.
+- Put that final compiled text inside the "text" parameter. This is what the user will see as the final answer.`,
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
-				},
-				"analysis-id": {
-					Type:        repository.TypeString,
-					Description: "Id of the last completed analysis",
+					Description: "The final compiled text output for the user (summary, results, explanations, etc.)",
 				},
 			},
-			Required: []string{"text", "analysis-id"},
+			Required: []string{"text"},
 		},
 		Service: ExitProcess,
 		Return: repository.Return{

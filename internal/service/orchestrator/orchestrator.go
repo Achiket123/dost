@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	gitignore "github.com/sabhiram/go-gitignore"
+
 	"github.com/spf13/viper"
 )
 
@@ -38,6 +40,8 @@ const (
 	TaskFailed    TaskStatus = "failed"
 )
 
+var ignoreMatcher *gitignore.GitIgnore
+
 type Task struct {
 	ID           string            `json:"id"`
 	Description  string            `json:"description"`
@@ -54,40 +58,54 @@ type Task struct {
 type AgentOrchestrator repository.Agent
 
 type InitialContext struct {
-	OS             string
-	Arch           string
-	User           string
-	Shell          string
-	CWD            string
-	GoVersion      string
-	InstalledTools []string
-	EnvVars        map[string]string
-	ProjectFiles   []string
-	ProjectType    string
-	GitBranch      string
-	InternetAccess bool
-	AgentRole      string
-	Capabilities   []string
-	Timezone       string
-	SessionID      string
+	OS              string
+	Arch            string
+	User            string
+	Shell           string
+	CWD             string
+	GoVersion       string
+	FolderStructure map[string]any
+	InstalledTools  []string
+	EnvVars         map[string]string
+	ProjectFiles    []string
+	ProjectType     string
+	GitBranch       string
+	InternetAccess  bool
+	AgentRole       string
+	Capabilities    []string
+	Timezone        string
+	SessionID       string
+}
+
+var defaultIgnore = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"vendor":       true,
+	".venv":        true,
+	".env":         true,
+	".idea":        true,
+	".vscode":      true,
+	"__pycache__":  true,
+	".dost":        true,
 }
 
 func GetInitialContext() InitialContext {
 	ctx := InitialContext{
-		OS:             runtime.GOOS,
-		Arch:           runtime.GOARCH,
-		User:           os.Getenv("USERNAME"),
-		Shell:          detectDefaultShell(),
-		CWD:            mustGetWorkingDir(),
-		GoVersion:      runtime.Version(),
-		InstalledTools: detectTools(),
-		EnvVars:        getImportantEnvVars(),
-		ProjectFiles:   scanProjectFiles(),
-		ProjectType:    detectProjectType(),
-		GitBranch:      getGitBranch(),
-		InternetAccess: checkInternet(),
-		Timezone:       getLocalTimezone(),
-		SessionID:      generateSessionID(),
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
+		User:            os.Getenv("USERNAME"),
+		Shell:           detectDefaultShell(),
+		CWD:             mustGetWorkingDir(),
+		FolderStructure: GetProjectStructure(map[string]any{"path": "./"}),
+		GoVersion:       runtime.Version(),
+		InstalledTools:  detectTools(),
+		EnvVars:         getImportantEnvVars(),
+		ProjectFiles:    scanProjectFiles(),
+		ProjectType:     detectProjectType(),
+		GitBranch:       getGitBranch(),
+		InternetAccess:  checkInternet(),
+		Timezone:        getLocalTimezone(),
+		SessionID:       generateSessionID(),
 	}
 	return ctx
 }
@@ -1176,6 +1194,81 @@ func EditFile(args map[string]any) map[string]any {
 
 	return map[string]any{"output": "Successfully written the content you provided"}
 }
+func GetProjectStructure(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if ok && text != "" {
+		fmt.Println(text)
+	}
+
+	loadGitIgnore()
+	path := args["path"].(string)
+	var builder strings.Builder
+	builder.WriteString(path + "\n")
+	err := getProjectStructureRecursive(path, "", &builder)
+	if err != nil {
+		return map[string]any{"error": err, "output": nil}
+	}
+	fmt.Println(builder.String())
+	if builder.String() == "." || builder.String() == "" {
+		return map[string]any{"error": nil, "output": "<empty directory>"}
+	}
+	return map[string]any{"error": nil, "output": builder.String()}
+}
+func loadGitIgnore() {
+	if _, err := os.Stat(".gitignore"); err == nil {
+		ignoreMatcher, _ = gitignore.CompileIgnoreFile(".gitignore")
+	}
+}
+func getProjectStructureRecursive(path string, prefix string, builder *strings.Builder) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+
+	for i, entry := range entries {
+		entryPath := filepath.Join(path, entry.Name())
+
+		// skip ignored entries
+		if ignoreMatcher != nil {
+			relPath, _ := filepath.Rel(".", entryPath)
+			if ignoreMatcher.MatchesPath(relPath) {
+				continue
+			}
+		}
+		if defaultIgnore[entry.Name()] {
+			// ✅ Skip this directory and its contents completely
+			if entry.IsDir() {
+				continue
+			}
+		}
+
+		// draw branch
+		connector := "├──"
+		if i == len(entries)-1 {
+			connector = "└──"
+		}
+		builder.WriteString(prefix + connector + " " + entry.Name() + "\n")
+
+		// recursively descend
+		if entry.IsDir() {
+			subPrefix := prefix
+			if i == len(entries)-1 {
+				subPrefix += "    "
+			} else {
+				subPrefix += "│   "
+			}
+			// 🚫 Don't go inside ignored directories
+			if !defaultIgnore[entry.Name()] {
+				err := getProjectStructureRecursive(entryPath, subPrefix, builder)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
 
 var OrchestratorCapabilities = []repository.Function{{
 	Name: "execute-command-in-terminal",
@@ -1303,20 +1396,20 @@ Use this whenever you are missing essential details, such as:
 	},
 	{
 		Name: "exit-process",
-		Description: `When you feel that the task is completed always call this to exit the process.
-Before calling this function make sure,
-You have completed all the task.
-You have fixed all the bugs.
-User is satisfied with the output.`,
+		Description: `When you feel that the task is fully completed, always call this function to exit the process.
+⚠️ Important:
+- Before calling, make sure all steps are done, bugs are fixed, and the user is satisfied.
+- Instead of just returning raw text, always compile everything (final output, explanations, summaries, code, results, etc.) into a single clear text message.
+- Put that final compiled text inside the "text" parameter. This is what the user will see as the final answer.`,
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+					Description: "The final compiled text output for the user (summary, results, explanations, etc.)",
 				},
 			},
-			Required: []string{},
+			Required: []string{"text"},
 		},
 		Service: ExitProcess,
 		Return: repository.Return{
