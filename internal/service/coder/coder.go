@@ -745,6 +745,7 @@ func EditFile(args map[string]any) map[string]any {
 			return map[string]any{"error": "INVALID CHANGE FORMAT"}
 		}
 
+		// Fixed the syntax errors here
 		startLine, _ := toInt(ch["start_line_number"])
 		startCol, _ := toInt(ch["start_line_col"])
 		endLine, _ := toInt(ch["end_line_number"])
@@ -762,89 +763,68 @@ func EditFile(args map[string]any) map[string]any {
 		})
 	}
 
-	// Sort changes by start line & col (ascending, so streaming works correctly)
+	// Sort changes by start line & col (descending to avoid position conflicts)
 	sort.Slice(processedChanges, func(i, j int) bool {
 		if processedChanges[i].startLine == processedChanges[j].startLine {
-			return processedChanges[i].startCol < processedChanges[j].startCol
+			return processedChanges[i].startCol > processedChanges[j].startCol
 		}
-		return processedChanges[i].startLine < processedChanges[j].startLine
+		return processedChanges[i].startLine > processedChanges[j].startLine
 	})
 
-	// Prepare temp file with same extension
-	ext := filepath.Ext(filepathInput)
-	tmpFile := fmt.Sprintf("%s_%d%s", strings.TrimSuffix(filepathInput, ext), time.Now().UnixNano(), ext)
-
-	inFile, err := os.Open(filepathInput)
+	// Read entire file into memory first
+	fileContent, err := os.ReadFile(filepathInput)
 	if err != nil {
-		return map[string]any{"error": "CANNOT OPEN INPUT FILE"}
+		return map[string]any{"error": "CANNOT READ INPUT FILE: " + err.Error()}
 	}
-	defer inFile.Close()
 
-	outFile, err := os.Create(tmpFile)
-	if err != nil {
-		return map[string]any{"error": "CANNOT CREATE TEMP FILE"}
-	}
-	defer outFile.Close()
+	lines := strings.Split(string(fileContent), "\n")
 
-	scanner := bufio.NewScanner(inFile)
-	writer := bufio.NewWriter(outFile)
+	// Apply changes from last to first (to maintain line numbers)
+	for _, change := range processedChanges {
+		switch change.operation {
+		case "delete":
+			if change.startLine > 0 && change.endLine <= len(lines) {
+				// Delete lines (1-indexed to 0-indexed)
+				start := change.startLine - 1
+				end := change.endLine
+				if end > len(lines) {
+					end = len(lines)
+				}
+				lines = append(lines[:start], lines[end:]...)
+			}
 
-	currentLine := 1
-	changeIdx := 0
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// If there are changes relevant to this line
-		for changeIdx < len(processedChanges) &&
-			processedChanges[changeIdx].startLine <= currentLine &&
-			processedChanges[changeIdx].endLine >= currentLine {
-
-			change := processedChanges[changeIdx]
-
-			switch change.operation {
-			case "delete":
-				if currentLine >= change.startLine && currentLine <= change.endLine {
-					// Skip writing this range
-					if currentLine == change.endLine {
-						changeIdx++
+		case "replace":
+			if change.startLine > 0 && change.startLine <= len(lines) {
+				lineIdx := change.startLine - 1
+				if lineIdx < len(lines) {
+					line := lines[lineIdx]
+					if change.startCol <= len(line) && change.endCol <= len(line) {
+						newLine := line[:change.startCol] + change.content + line[change.endCol:]
+						lines[lineIdx] = newLine
 					}
-					goto nextLine
 				}
-			case "replace":
-				if currentLine == change.startLine && currentLine == change.endLine {
-					newLine := line[:change.startCol] + change.content + line[change.endCol:]
-					_, _ = writer.WriteString(newLine + "\n")
-					changeIdx++
-					goto nextLine
-				}
-			case "write":
-				if currentLine == change.startLine {
-					newLine := line[:change.startCol] + change.content + line[change.startCol:]
-					_, _ = writer.WriteString(newLine + "\n")
-					changeIdx++
-					goto nextLine
+			}
+
+		case "write":
+			if change.startLine > 0 && change.startLine <= len(lines) {
+				lineIdx := change.startLine - 1
+				if lineIdx < len(lines) {
+					line := lines[lineIdx]
+					if change.startCol <= len(line) {
+						newLine := line[:change.startCol] + change.content + line[change.startCol:]
+						lines[lineIdx] = newLine
+					}
 				}
 			}
 		}
-
-		// Normal write if no changes applied
-		_, _ = writer.WriteString(line + "\n")
-
-	nextLine:
-		currentLine++
 	}
 
-	if err := scanner.Err(); err != nil {
-		return map[string]any{"error": "ERROR SCANNING FILE"}
+	// Write back to original file
+	newContent := strings.Join(lines, "\n")
+	err = os.WriteFile(filepathInput, []byte(newContent), 0644)
+	if err != nil {
+		return map[string]any{"error": "CANNOT WRITE TO FILE: " + err.Error()}
 	}
-
-	// Flush writer
-	_ = writer.Flush()
-
-	// Replace original file with edited file
-	_ = os.Remove(filepathInput)
-	_ = os.Rename(tmpFile, filepathInput)
 
 	return map[string]any{"output": "Successfully written the content you provided"}
 }

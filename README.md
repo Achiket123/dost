@@ -142,19 +142,16 @@ logger:
 ```
 
 ## :handshake: Contributing
+## :handshake: Contributing
 
-Contributions are welcome! Here are several ways you can contribute:
+We welcome contributions to DOST! If you'd like to contribute, please follow these simple steps:
 
-*   **Report Bugs:** Submit bug reports through GitHub Issues.
-*   **Suggest Enhancements:** Share your ideas for new features or improvements.
-*   **Write Code:** Contribute code fixes or new features by submitting a pull request.
+1.  **Fork the repository** on GitHub.
+2.  **Create a new branch** for your feature or bug fix.
+3.  **Make your changes** and ensure they are well-documented.
+4.  **Submit a pull request** with a clear description of your changes.
 
-When contributing code, please follow these guidelines:
-
-*   Ensure your code adheres to the project's coding standards.
-*   Write clear, concise commit messages.
-*   Include relevant tests for your changes.
-*   Document any new or modified functionality.
+We appreciate your help in making DOST even better!
 
 ## :copyright: License
 
