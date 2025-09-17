@@ -2,6 +2,7 @@ package app
 
 import (
 	"dost/internal/config"
+	"dost/internal/service"
 	"dost/internal/service/orchestrator"
 	"fmt"
 	"os"
@@ -48,16 +49,20 @@ func Execute() error {
 func init() {
 	cobra.OnInitialize(InitConfig)
 	rootCmd.Run = handleUserQuery
-
+	rootCmd.PersistentFlags().BoolVar(&service.TakePermission, "yes", false, "PLEASE TELL US YOUR QUERY")
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file default is C:/.dost.yaml")
 	rootCmd.PersistentFlags().String("ai", "", "AI query for Gemini API")
 	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 func handleUserQuery(cmd *cobra.Command, args []string) {
+	query := strings.Join(args, " ")
+	if query == "" {
+		// also fallback to flag if no args provided
+		query, _ = cmd.Flags().GetString("yes")
 
+	}
 	var agent orchestrator.AgentOrchestrator
 	agent.NewAgent()
-	query := strings.Join(args, " ")
 	fmt.Printf("QUERY: %s\n", query)
 	agent.Interaction(map[string]any{"query": query})
 

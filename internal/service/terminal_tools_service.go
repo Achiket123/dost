@@ -22,6 +22,7 @@ import (
 	gitignore "github.com/sabhiram/go-gitignore"
 )
 
+var TakePermission = false
 var defaultIgnore = map[string]bool{
 	".git":         true,
 	"node_modules": true,

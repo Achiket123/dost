@@ -364,7 +364,6 @@ func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 	}
 }
 
-
 // ToMap serializes the AgentCoder into a map.
 func (c *AgentCoder) ToMap() map[string]any {
 	agent := repository.Agent(*c)
