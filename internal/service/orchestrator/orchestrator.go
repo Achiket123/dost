@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -1048,12 +1049,145 @@ func ExecuteCommands(args map[string]any) map[string]any {
 		"output":  stdoutBuf.String(),
 	}
 }
+func EditFile(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if ok {
+		fmt.Printf("CODER: %s\n", text)
+	}
+
+	filepathInput, ok := args["file_path"].(string)
+	if !ok {
+		return map[string]any{"error": "ERROR READING PATH"}
+	}
+
+	changes, ok := args["changes"].([]interface{})
+	if !ok {
+		return map[string]any{"error": "REQUIRED CHANGES MAP"}
+	}
+
+	// Convert changes into structured format
+	type changeInfo struct {
+		startLine int
+		startCol  int
+		endLine   int
+		endCol    int
+		operation string
+		content   string
+	}
+
+	toInt := func(v any) (int, bool) {
+		switch val := v.(type) {
+		case float64:
+			return int(val), true
+		case int:
+			return val, true
+		default:
+			return 0, false
+		}
+	}
+
+	var processedChanges []changeInfo
+	for _, c := range changes {
+		ch, ok := c.(map[string]any)
+		if !ok {
+			return map[string]any{"error": "INVALID CHANGE FORMAT"}
+		}
+
+		// Fixed the syntax errors here
+		startLine, _ := toInt(ch["start_line_number"])
+		startCol, _ := toInt(ch["start_line_col"])
+		endLine, _ := toInt(ch["end_line_number"])
+		endCol, _ := toInt(ch["end_line_col"])
+		operation, _ := ch["operation"].(string)
+		content, _ := ch["content"].(string)
+
+		processedChanges = append(processedChanges, changeInfo{
+			startLine: startLine,
+			startCol:  startCol,
+			endLine:   endLine,
+			endCol:    endCol,
+			operation: operation,
+			content:   content,
+		})
+	}
+
+	// Sort changes by start line & col (descending to avoid position conflicts)
+	sort.Slice(processedChanges, func(i, j int) bool {
+		if processedChanges[i].startLine == processedChanges[j].startLine {
+			return processedChanges[i].startCol > processedChanges[j].startCol
+		}
+		return processedChanges[i].startLine > processedChanges[j].startLine
+	})
+
+	// Read entire file into memory first
+	fileContent, err := os.ReadFile(filepathInput)
+	if err != nil {
+		return map[string]any{"error": "CANNOT READ INPUT FILE: " + err.Error()}
+	}
+
+	lines := strings.Split(string(fileContent), "\n")
+
+	// Apply changes from last to first (to maintain line numbers)
+	for _, change := range processedChanges {
+		switch change.operation {
+		case "delete":
+			if change.startLine > 0 && change.endLine <= len(lines) {
+				// Delete lines (1-indexed to 0-indexed)
+				start := change.startLine - 1
+				end := change.endLine
+				if end > len(lines) {
+					end = len(lines)
+				}
+				lines = append(lines[:start], lines[end:]...)
+			}
+
+		case "replace":
+			if change.startLine > 0 && change.startLine <= len(lines) {
+				lineIdx := change.startLine - 1
+				if lineIdx < len(lines) {
+					line := lines[lineIdx]
+					if change.startCol <= len(line) && change.endCol <= len(line) {
+						newLine := line[:change.startCol] + change.content + line[change.endCol:]
+						lines[lineIdx] = newLine
+					}
+				}
+			}
+
+		case "write":
+			if change.startLine > 0 && change.startLine <= len(lines) {
+				lineIdx := change.startLine - 1
+				if lineIdx < len(lines) {
+					line := lines[lineIdx]
+					if change.startCol <= len(line) {
+						newLine := line[:change.startCol] + change.content + line[change.startCol:]
+						lines[lineIdx] = newLine
+					}
+				}
+			}
+		}
+	}
+
+	// Write back to original file
+	newContent := strings.Join(lines, "\n")
+	err = os.WriteFile(filepathInput, []byte(newContent), 0644)
+	if err != nil {
+		return map[string]any{"error": "CANNOT WRITE TO FILE: " + err.Error()}
+	}
+
+	return map[string]any{"output": "Successfully written the content you provided"}
+}
 
 var OrchestratorCapabilities = []repository.Function{{
 	Name: "execute-command-in-terminal",
 	Description: `Run any valid shell/terminal command in the current working directory. 
-Use for file operations (create, delete, list, copy files, move files, rename files, git functions, etc), 
-navigation (cd, ls), installing packages, running build tools, executing programs, checking versions, and inspecting system state. 
+Use for:
+- File operations (create, delete, list, copy files, move files, rename files)
+- Navigation (cd, ls)
+- Package management (npm, pip, go, dart, flutter, etc.)
+- Build tools (make, go build, flutter build, etc.)
+- Executing programs, checking versions, inspecting system state
+- Git operations (status, diff, add, commit, push, pull, log, branch, etc.)
+
 Always provide the command and arguments separately.
 Example: { "command": "git", "arguments": ["commit", "-m", "testing through this tool"] }`,
 
@@ -1084,7 +1218,61 @@ Example: { "command": "git", "arguments": ["commit", "-m", "testing through this
 		"output": "string",
 	},
 },
-
+	{
+		Name:        "edit-file",
+		Description: "Edits a file at a given path by applying a specified change or replacement to its content.",
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"text": {
+					Type:        repository.TypeString,
+					Description: "Additional context or instructions provided by the AI for the edit operation.",
+				},
+				"file_path": {
+					Type:        repository.TypeString,
+					Description: "The path of the file to edit. Example: './folder/file.go'.",
+				},
+				"changes": {
+					Type:        repository.TypeArray,
+					Description: "A list of changes to apply to the file, with each change specifying a selection and an operation.",
+					Items: &repository.Properties{
+						Type:        repository.TypeObject,
+						Description: "Operation Meta data",
+						Properties: map[string]*repository.Properties{
+							"start_line_number": {
+								Type:        repository.TypeInteger,
+								Description: "The starting line number (1-based) of the change range.",
+							},
+							"start_line_col": {
+								Type:        repository.TypeInteger,
+								Description: "The starting column number (0-based) of the change range.",
+							},
+							"end_line_number": {
+								Type:        repository.TypeInteger,
+								Description: "The ending line number (1-based) of the change range.",
+							},
+							"end_line_col": {
+								Type:        repository.TypeInteger,
+								Description: "The ending column number (0-based) of the change range.",
+							},
+							"operation": {
+								Enum:        []string{"delete", "replace", "write"},
+								Type:        repository.TypeString,
+								Description: "The operation to perform on the selected range. Options: 'delete' (remove text), 'replace' (replace text with new content), or 'write' (insert new content at start).",
+							},
+							"content": {
+								Type:        repository.TypeString,
+								Description: "The replacement or insertion text to apply. Required for 'replace' and 'write' operations.",
+							},
+						},
+						Required: []string{"start_line_number", "start_line_col", "end_line_number", "end_line_col", "operation", "content"},
+					},
+				},
+			},
+			Required: []string{"text", "file_path", "changes"},
+		},
+		Service: EditFile,
+	},
 	{
 		Name: "take-input-from-terminal",
 		Description: `Prompts the user in the terminal for multiple required inputs.

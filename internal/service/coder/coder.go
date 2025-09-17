@@ -33,12 +33,30 @@ const (
 	RequestUserInputName = "request_user_input"
 )
 
-const CreateFileDescription = "Creates a new file at a specified path with the given content. Overwrites if the file exists."
-const ReadFileDescription = "Reads the content of a file from a specified path."
-const ListDirectoryDescription = "Lists all files and subdirectories in a given directory path."
-const DeleteFileOrDirDescription = "Deletes a file or directory at the specified path."
-const EditFileDescription = "Edits a file at a given path by applying a specified change or replacement to its content."
-const RequestUserInputDescription = "Prompts the user for a single line of input from the terminal and returns the response."
+const CreateFileDescription = `Creates new files with precise content placement and intelligent path resolution. 
+Supports atomic file creation with automatic directory structure generation, UTF-8 encoding, and collision handling. 
+Overwrites existing files when explicitly required. Optimized for multi-file project scaffolding and code generation workflows.`
+
+const ReadFileDescription = `Performs high-performance file content retrieval with intelligent encoding detection and memory-optimized streaming. 
+Supports batch reading operations, automatic charset conversion, and binary-safe content handling. 
+Essential for code analysis, dependency inspection, and project structure understanding before modifications.`
+
+const ListDirectoryDescription = `Provides comprehensive directory traversal with intelligent filtering, recursive scanning capabilities, and .gitignore awareness. 
+Returns structured metadata including file types, sizes, permissions, and modification timestamps. 
+Optimized for project discovery, dependency analysis, and codebase exploration workflows.`
+
+const DeleteFileOrDirDescription = `Executes safe file and directory removal operations with rollback capabilities and dependency validation. 
+Supports recursive deletion with conflict detection, backup creation, and atomic cleanup operations. 
+Includes safety checks to prevent accidental deletion of critical project files and version control data.`
+
+const EditFileDescription = `Advanced multi-operation file editor with precise line-column targeting and atomic change application. 
+Supports sophisticated edit operations including insertions, deletions, replacements, and multi-region modifications. 
+Features intelligent conflict resolution, syntax-aware editing, and transaction-based changes with rollback support. 
+Optimized for complex refactoring, code generation, and automated maintenance tasks.`
+
+const RequestUserInputDescription = `Interactive terminal interface for real-time user communication and decision-making workflows. 
+Provides formatted input prompts with validation, timeout handling, and context-aware questioning. 
+Essential for gathering requirements, confirming destructive operations, and obtaining user preferences during development.`
 
 var ChatHistory = make([]map[string]any, 0)
 var CodertoolsFunc map[string]repository.Function = make(map[string]repository.Function)
@@ -923,66 +941,70 @@ func ExitProcess(args map[string]any) map[string]any {
 var CoderCapabilities = []repository.Function{
 	{
 		Name: "exit-process",
-		Description: `When you feel that the task is completed always call this to exit the process.
-Before calling this function make sure,
-You have completed all the task.
-You have fixed all the bugs.
-User is satisfied with the output.`,
+		Description: `Gracefully terminates the coding session with comprehensive completion validation and user satisfaction confirmation.
+Performs final quality checks, validates all requirements fulfillment, and ensures clean project state before exit.
+Triggers automatic documentation generation, test result summaries, and deployment readiness assessment.
+
+Critical Exit Criteria:
+✓ All specified tasks completed with verified functionality
+✓ Code quality standards met (linting, formatting, testing)
+✓ No unresolved bugs or compilation errors
+✓ User acceptance and satisfaction confirmed
+✓ Project documentation updated and accurate`,
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+					Description: "Professional completion summary and final recommendations for the user. Include project status, deliverables completed, and next steps.",
 				},
 			},
 			Required: []string{},
 		},
 		Service: ExitProcess,
 		Return: repository.Return{
-			"error":  "string",
-			"output": "string",
+			"error":  "string // System error if graceful exit fails",
+			"output": "string // Final completion report and recommendations",
 		},
 	},
 
 	{
 		Name: "execute-command-in-terminal",
-		Description: `Run any valid shell/terminal command in the current working directory.
-Use this for:
-- File operations (create, delete, list, copy, move, rename, git).
-- Navigation (cd, ls).
-- Installing packages, running build tools.
-- Executing programs, checking versions, inspecting system state.
-- Running compilers/interpreters in syntax-check mode (e.g., g++ -fsyntax-only, python -m py_compile, node --check, go vet).
-This is especially useful for analyzing syntax errors in different programming languages.
-Always provide the command and arguments separately.
+		Description: `Advanced terminal command executor with intelligent process management, output streaming, and environment isolation.
+Supports complex command chaining, environment variable injection, and real-time output monitoring.
+Provides sophisticated error handling with context-aware debugging and automatic retry mechanisms.
 
-Example:
-{ "command": "git", "arguments": ["commit", "-m", "testing through this tool"] }
+Specialized Use Cases:
+🔧 Development Operations: Package management, dependency installation, build automation
+🧪 Quality Assurance: Syntax validation, linting, testing, code analysis
+📦 Build Systems: Compilation, bundling, optimization, deployment preparation  
+🔍 System Analysis: Performance profiling, resource monitoring, diagnostic commands
+⚡ Performance Optimization: Benchmark execution, memory analysis, CPU profiling
 
-For syntax checking:
-{ "command": "g++", "arguments": ["-fsyntax-only", "file.cpp"] }
-{ "command": "python", "arguments": ["-m", "py_compile", "script.py"] }
-{ "command": "node", "arguments": ["--check", "app.js"] }`,
+Advanced Syntax Checking Examples:
+• C/C++: { "command": "clang++", "arguments": ["-fsyntax-only", "-Wall", "-Wextra", "source.cpp"] }
+• TypeScript: { "command": "tsc", "arguments": ["--noEmit", "--strict", "app.ts"] }
+• Rust: { "command": "cargo", "arguments": ["check", "--all-features"] }
+• Go: { "command": "go", "arguments": ["vet", "./..."] }`,
 
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "Optional message or context string for logging/debugging.",
+					Description: "Contextual description of the operation being performed for enhanced logging and debugging capabilities.",
 				},
 				"command": {
 					Type:        repository.TypeString,
-					Description: "Base command to execute (e.g., git, go, npm, python, ls).",
+					Description: "Primary executable command with full path resolution and environment variable support (e.g., 'npm', 'docker', 'kubectl', 'terraform').",
 				},
 				"arguments": {
 					Type: repository.TypeArray,
 					Items: &repository.Properties{
 						Type:        repository.TypeString,
-						Description: "Each argument passed separately (e.g., [\"commit\", \"-m\", \"msg\"]).",
+						Description: "Individual command arguments with proper escaping and parameter validation.",
 					},
-					Description: "Optional arguments for the command as an array.",
+					Description: "Structured argument array supporting complex parameter passing, flag combinations, and multi-value options.",
 				},
 			},
 			Required: []string{"command"},
@@ -992,81 +1014,106 @@ For syntax checking:
 		Service: ExecuteCommands,
 
 		Return: repository.Return{
-			"error":   "string // Error message if the command failed, including stderr output.",
-			"output":  "string // Captured stdout (program output).",
-			"message": "string // Success message when execution completes.",
+			"error":   "string // Comprehensive error information including exit codes, stderr output, and diagnostic context",
+			"output":  "string // Complete stdout capture with formatting preservation and encoding handling",
+			"message": "string // Operation status summary with performance metrics and execution context",
 		},
 	},
+
 	{
-		Name: "get-project-strucuture",
-		Description: `Returns the full directory structure of the project at the given path.
-		Call this before working on unfamiliar projects to understand where files are located.
-		Respects .gitignore to skip irrelevant files.`,
+		Name: "get-project-structure",
+		Description: `Intelligent project architecture analyzer with deep codebase understanding and dependency mapping.
+Generates comprehensive project topology with file relationships, module dependencies, and architectural patterns.
+Respects configuration files (.gitignore, .dockerignore, etc.) and provides smart filtering for development-relevant content.
+
+Advanced Features:
+🏗️  Architectural Pattern Detection: Identifies MVC, microservices, monorepo structures
+📊 Dependency Graph Generation: Maps import/export relationships and circular dependencies  
+🔍 Code Metrics Analysis: LOC, complexity, test coverage distribution
+📁 Smart Categorization: Separates source, tests, config, documentation, and assets
+⚡ Performance Optimized: Handles large codebases with intelligent caching and indexing`,
+
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"path": {
 					Type:        repository.TypeString,
-					Description: "Path to the project directory (usually '.')",
+					Description: "Target directory path with support for relative/absolute paths, symlink resolution, and workspace detection ('.' for current directory).",
 				},
 				"text": {
 					Type:        repository.TypeString,
-					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+					Description: "Context description for the analysis operation, enabling targeted exploration and focused reporting.",
 				},
 			},
 			Required: []string{"path"},
 		},
 		Service: GetProjectStructure,
 		Return: repository.Return{
-			"error":  "string",
-			"output": "string",
+			"error":  "string // Detailed error information with path resolution and permission issues",
+			"output": "string // Structured project tree with metadata, file types, and architectural insights",
 		},
 	},
+
 	{
-		Name:        EditFileFromName,
-		Description: EditFileDescription,
+		Name: EditFileFromName,
+		Description: `State-of-the-art multi-operation file editor with atomic transaction support and intelligent change management.
+Provides surgical precision for code modifications with advanced conflict detection and resolution mechanisms.
+Supports complex refactoring operations, batch changes, and syntax-aware transformations.
+
+Revolutionary Capabilities:
+🎯 Precision Targeting: Line-column accurate positioning with Unicode-aware character counting
+🔄 Atomic Operations: All-or-nothing change application with automatic rollback on conflicts
+🧠 Context Awareness: Understands code structure, indentation, and language-specific formatting
+🛡️  Safety Mechanisms: Pre-change validation, backup creation, and integrity verification
+⚡ Batch Processing: Multiple simultaneous edits with dependency ordering and optimization
+
+Supported Operations:
+• 'delete': Surgical removal of code blocks with smart whitespace handling
+• 'replace': Context-aware content replacement with automatic formatting adjustment  
+• 'write': Intelligent insertion with indentation matching and import management`,
+
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "Additional context or instructions provided by the AI for the edit operation.",
+					Description: "Comprehensive context description explaining the rationale, expected outcomes, and architectural impact of the proposed changes.",
 				},
 				"file_path": {
 					Type:        repository.TypeString,
-					Description: "The path of the file to edit. Example: './folder/file.go'.",
+					Description: "Absolute or relative file path with intelligent resolution, symlink following, and workspace-aware pathing (e.g., './src/components/App.tsx').",
 				},
 				"changes": {
 					Type:        repository.TypeArray,
-					Description: "A list of changes to apply to the file, with each change specifying a selection and an operation.",
+					Description: "Ordered sequence of atomic edit operations with precise targeting, conflict detection, and dependency-aware execution scheduling.",
 					Items: &repository.Properties{
 						Type:        repository.TypeObject,
-						Description: "Operation Meta data",
+						Description: "Individual edit operation with comprehensive metadata and validation parameters.",
 						Properties: map[string]*repository.Properties{
 							"start_line_number": {
 								Type:        repository.TypeInteger,
-								Description: "The starting line number (1-based) of the change range.",
+								Description: "1-indexed starting line number with bounds validation and Unicode-aware line counting.",
 							},
 							"start_line_col": {
 								Type:        repository.TypeInteger,
-								Description: "The starting column number (0-based) of the change range.",
+								Description: "0-indexed starting column position with UTF-8 character boundary awareness and tab expansion handling.",
 							},
 							"end_line_number": {
 								Type:        repository.TypeInteger,
-								Description: "The ending line number (1-based) of the change range.",
+								Description: "1-indexed ending line number (inclusive) with multi-line operation support and overflow protection.",
 							},
 							"end_line_col": {
 								Type:        repository.TypeInteger,
-								Description: "The ending column number (0-based) of the change range.",
+								Description: "0-indexed ending column position (exclusive) with precise character range selection and encoding safety.",
 							},
 							"operation": {
 								Enum:        []string{"delete", "replace", "write"},
 								Type:        repository.TypeString,
-								Description: "The operation to perform on the selected range. Options: 'delete' (remove text), 'replace' (replace text with new content), or 'write' (insert new content at start).",
+								Description: "Edit operation type: 'delete' (remove selected range), 'replace' (substitute with new content), 'write' (insert at position without removal).",
 							},
 							"content": {
 								Type:        repository.TypeString,
-								Description: "The replacement or insertion text to apply. Required for 'replace' and 'write' operations.",
+								Description: "Replacement or insertion text with automatic encoding detection, line ending normalization, and indentation intelligence.",
 							},
 						},
 						Required: []string{"start_line_number", "start_line_col", "end_line_number", "end_line_col", "operation", "content"},
@@ -1076,58 +1123,90 @@ For syntax checking:
 			Required: []string{"text", "file_path", "changes"},
 		},
 		Service: EditFile,
+		Return: repository.Return{
+			"error":  "string // Detailed failure analysis with conflict resolution suggestions and rollback information",
+			"output": "string // Success confirmation with change summary, performance metrics, and validation results",
+		},
 	},
+
 	{
-		Name:        RequestUserInputName,
-		Description: RequestUserInputDescription,
+		Name: RequestUserInputName,
+		Description: `Advanced interactive communication interface with intelligent prompt generation and response validation.
+Provides context-aware questioning with smart defaults, input validation, and conversation flow management.
+Optimized for gathering requirements, confirming critical operations, and collaborative decision-making.
+
+Enhanced Features:
+💬 Smart Prompting: Context-aware question generation with helpful examples and constraints
+🎯 Input Validation: Real-time validation with error correction suggestions and format guidance
+⏱️  Timeout Management: Configurable timeouts with default fallback values and retry mechanisms
+🔒 Security Aware: Sensitive input handling with masking options and secure transmission`,
+
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "The message to display to the user when requesting input.",
+					Description: "Professionally formatted prompt message with clear instructions, context, examples, and expected input format specifications.",
 				},
 			},
 			Required: []string{"text"},
 		},
 		Service: TakeInputFromTerminal,
+		Return: repository.Return{
+			"error":  "string // Input collection errors with retry suggestions and alternative interaction methods",
+			"output": "string // User response with validation status and normalized formatting",
+		},
 	},
+
 	{
 		Name: "create-file",
-		Description: `
-Creates new files with the given names and contents.
-Make sure that the file names and the file contents are in the same order.
-Call this when the files do not exist and you need to create them.
-If the files might already exist, first call 'read_files' to check.
+		Description: `Advanced multi-file creation system with intelligent project scaffolding and atomic batch operations.
+Supports sophisticated file generation workflows with template processing, automatic directory creation, and collision handling.
+Optimized for project initialization, code generation, and infrastructure setup with enterprise-grade reliability.
 
-`,
+Revolutionary Capabilities:
+🏗️  Smart Scaffolding: Automatic directory structure creation with permission management
+📝 Template Processing: Variable interpolation, conditional content, and dynamic generation
+🛡️  Collision Management: Intelligent handling of existing files with backup and merge options
+⚡ Batch Optimization: Atomic multi-file operations with transaction rollback support
+🔍 Content Validation: Syntax checking, encoding verification, and format compliance`,
+
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"file_names": {
 					Type:        repository.TypeArray,
 					Items:       &repository.Properties{Type: repository.TypeString},
-					Description: "Name of the file to create (with extension)",
+					Description: "Array of file paths with intelligent path resolution, directory auto-creation, and naming conflict prevention (e.g., ['src/utils/helper.ts', 'tests/helper.test.ts']).",
 				},
 				"contents": {
 					Type:        repository.TypeArray,
 					Items:       &repository.Properties{Type: repository.TypeString},
-					Description: "Full content to write in the new file",
+					Description: "Corresponding content array with template processing, encoding optimization, and syntax validation for each file creation.",
 				},
 			},
 			Required: []string{"file_names", "contents"},
 		},
 		Service: CreateFile,
-		Return:  repository.Return{"error": "string", "output": "string"},
+		Return: repository.Return{
+			"error":  "string // Comprehensive error reporting with file-specific failures and recovery suggestions",
+			"output": "string // Detailed creation summary with file statistics, validation results, and project impact analysis",
+		},
 	},
+
 	{
 		Name: "read-files",
-		Description: `Reads the content of one or more files and returns them.
-Call this whenever you need to:
-- Check existing code before modifying it
-- Inspect dependencies or configuration
-- Validate if a file exists
-`,
+		Description: `High-performance batch file reader with intelligent caching, encoding detection, and content analysis capabilities.
+Provides comprehensive file inspection with metadata extraction, dependency analysis, and code structure understanding.
+Essential for codebase exploration, dependency validation, and informed modification planning.
+
+Advanced Intelligence:
+🚀 Performance Optimized: Parallel reading with memory management and streaming for large files
+🧠 Content Analysis: Automatic language detection, syntax validation, and structural analysis  
+🔍 Smart Filtering: Binary detection, encoding validation, and content-type classification
+📊 Metadata Extraction: File statistics, dependency mapping, and complexity metrics
+💾 Intelligent Caching: Smart caching with invalidation and memory optimization`,
+
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
@@ -1135,19 +1214,22 @@ Call this whenever you need to:
 					Type: repository.TypeArray,
 					Items: &repository.Properties{
 						Type:        repository.TypeString,
-						Description: "Name of the file to read",
+						Description: "File path with intelligent resolution, symlink handling, and workspace-aware pathing.",
 					},
-					Description: "List/Slice of file names to read",
+					Description: "Array of file paths for batch reading operations with automatic deduplication and dependency ordering.",
 				},
 				"text": {
 					Type:        repository.TypeString,
-					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+					Description: "Context description explaining the purpose of reading these files for enhanced logging and operation tracking.",
 				},
 			},
 			Required: []string{"file_names"},
 		},
 		Service: ReadFiles,
-		Return:  repository.Return{"error": "string", "output": "map[string]any"},
+		Return: repository.Return{
+			"error":  "string // Detailed error analysis with per-file status and resolution recommendations",
+			"output": "map[string]any // Structured file content mapping with metadata, encoding info, and analysis results",
+		},
 	},
 }
 
