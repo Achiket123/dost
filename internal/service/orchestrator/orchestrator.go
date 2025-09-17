@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"dost/internal/repository"
+	"dost/internal/service"
 	"dost/internal/service/analysis"
 	"dost/internal/service/coder"
 	"encoding/json"
@@ -935,7 +936,12 @@ func ExecuteCommands(args map[string]any) map[string]any {
 			}
 		}
 	}
-
+	fmt.Println(">DOST\\")
+	fmt.Printf("%s %v", cmdStr, argList)
+	if !service.TakePermission {
+		fmt.Printf("\nAbout to run command in %s:\n> %s\nPress ENTER to continue or Ctrl+C to cancel...", wd, argList)
+		bufio.NewReader(os.Stdin).ReadBytes('\n') // wait for Enter
+	}
 	// Handle `cd` separately
 	if cmdStr == "cd" {
 		if len(argList) == 0 {
