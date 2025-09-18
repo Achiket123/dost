@@ -380,7 +380,7 @@ func AskAnAgent(args map[string]any) map[string]any {
 		analysisResult := analysis.AnalysisMap[analysisOutPut.(string)]
 		jsonBytes, err := json.MarshalIndent(analysisResult, "", "  ")
 		if err != nil {
-			fmt.Println("❌ Error marshalling JSON:", err)
+			fmt.Println("X Error marshalling JSON:", err)
 			return nil
 		}
 
