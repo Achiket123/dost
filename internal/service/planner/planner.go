@@ -374,11 +374,70 @@ func Plan(args map[string]any) map[string]any {
 
 	return map[string]any{"output": data}
 }
-
 func GetPlannerArrayMap() map[string]any {
-	return nil
+	return map[string]any{
+		"create_plan": map[string]any{
+			"name":        "create_plan",
+			"description": "Creates a plan with a name and instructions",
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "The name of the plan",
+						"required":    true,
+					},
+					"instructions": map[string]any{
+						"type":        "string",
+						"description": "The instructions for the plan",
+						"required":    true,
+					},
+				},
+			},
+		},
+		"generate_tasklist": map[string]any{
+			"name":        "generate_tasklist",
+			"description": "Generates a task list with a name and instructions",
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "The name of the task list",
+						"required":    true,
+					},
+					"instructions": map[string]any{
+						"type":        "string",
+						"description": "The instructions for the task list",
+						"required":    true,
+					},
+				},
+			},
+		},
+	}
 }
 
 var PlannerCapabilities = []repository.Function{
-	{}, {},
+	{
+		Name:        "create_plan",
+		Description: "Creates a plan with a name and instructions",
+		Service:     Plan,
+	},
+	{
+		Name:        "generate_tasklist",
+		Description: "Generates a task list with a name and instructions",
+		Service:     GenerateTasklist,
+	},
+}
+
+func GenerateTasklist(args map[string]any) map[string]any {
+	name, ok := args["name"].(string)
+
+	instructions, ok := args["instructions"].(string)
+
+	if !ok {
+		return map[string]any{"error": "instructions parameters"}
+	}
+	return map[string]any{"output": map[string]any{"name": name, "instructions": instructions}}
+
 }
