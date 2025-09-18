@@ -73,28 +73,220 @@ type OutputFormat struct {
 
 type AgentAnalysis repository.Agent
 
-// args must and only contains "query"
-func (p *AgentAnalysis) Interaction(args map[string]any) map[string]any {
+type InitialContext struct {
+	OS              string
+	Arch            string
+	User            string
+	Shell           string
+	CWD             string
+	GoVersion       string
+	FolderStructure map[string]any
+	InstalledTools  []string
+	EnvVars         map[string]string
+	ProjectFiles    []string
+	ProjectType     string
+	GitBranch       string
+	InternetAccess  bool
+	AgentRole       string
+	Capabilities    []string
+	Timezone        string
+	SessionID       string
+}
 
+func GetInitialContext() InitialContext {
+	ctx := InitialContext{
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
+		User:            os.Getenv("USERNAME"),
+		Shell:           detectDefaultShell(),
+		CWD:             mustGetWorkingDir(),
+		FolderStructure: GetProjectStructure(map[string]any{"path": "./"}),
+		GoVersion:       runtime.Version(),
+		InstalledTools:  detectTools(),
+		EnvVars:         getImportantEnvVars(),
+		ProjectFiles:    scanProjectFiles(),
+		ProjectType:     detectProjectType(),
+		GitBranch:       getGitBranch(),
+		InternetAccess:  checkInternet(),
+		Timezone:        getLocalTimezone(),
+		SessionID:       generateSessionID(),
+	}
+	return ctx
+}
+
+func detectDefaultShell() string {
+	if runtime.GOOS == "windows" {
+		// prefer PowerShell if present
+		if _, err := exec.LookPath("powershell"); err == nil {
+			return "powershell"
+		}
+		return "cmd"
+	}
+	return os.Getenv("SHELL")
+}
+
+func mustGetWorkingDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return dir
+}
+
+func detectTools() []string {
+	var found []string
+	val := os.Getenv("PATH")
+	found = strings.Split(val, ";")
+	return found
+}
+
+func getImportantEnvVars() map[string]string {
+	keys := []string{"PATH", "GOROOT", "GOPATH", "JAVA_HOME"}
+	env := make(map[string]string)
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			env[k] = v
+		}
+	}
+	return env
+}
+
+func scanProjectFiles() []string {
+	files := []string{}
+	filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			if strings.HasSuffix(path, ".go") ||
+				path == "go.mod" || path == "package.json" || path == "requirements.txt" ||
+				path == "Dockerfile" || path == "README.md" {
+				files = append(files, path)
+			}
+		}
+		return nil
+	})
+	return files
+}
+
+func detectProjectType() string {
+	if _, err := os.Stat("go.mod"); err == nil {
+		return "Go project"
+	}
+	if _, err := os.Stat("package.json"); err == nil {
+		return "Node.js project"
+	}
+	if _, err := os.Stat("requirements.txt"); err == nil {
+		return "Python project"
+	}
+	return "Unknown"
+}
+
+func getGitBranch() string {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func checkInternet() bool {
+	cmd := exec.Command("ping", "-c", "1", "8.8.8.8")
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("ping", "-n", "1", "8.8.8.8")
+	}
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+func getLocalTimezone() string {
+	_, tz := time.Now().Zone()
+	return fmt.Sprintf("%d min offset", tz/60)
+}
+
+func generateSessionID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+// args must and only contains "query"
+// Helper function to format files for Gemini
+func formatFilesForGemini(filesRead map[string]any) string {
+	if len(filesRead) == 0 {
+		return ""
+	}
+
+	var result strings.Builder
+	result.WriteString("=== FILES CONTENT ===\n\n")
+
+	for fileName, fileData := range filesRead {
+		result.WriteString(fmt.Sprintf("FILE: %s\n", fileName))
+		result.WriteString("=" + strings.Repeat("=", len(fileName)+6) + "\n")
+
+		if chunks, ok := fileData.([]map[string]any); ok {
+			for _, chunk := range chunks {
+				if content, exists := chunk["content"].(string); exists {
+					result.WriteString(content)
+					result.WriteString("\n")
+				}
+			}
+		}
+		result.WriteString("\n" + strings.Repeat("-", 50) + "\n\n")
+	}
+
+	return result.String()
+}
+
+func (p *AgentAnalysis) Interaction(args map[string]any) map[string]any {
+	InitialContext := GetInitialContext()
+	InitialContextBytes, err := json.Marshal(InitialContext)
+	if err != nil {
+		return map[string]any{"error": "Unable to get initial context"}
+	}
+
+	// Build consolidated user message with proper formatting
+	var userMessage strings.Builder
+
+	// Add files content if any
+	filesContent := formatFilesForGemini(FilesRead)
+	if filesContent != "" {
+		userMessage.WriteString(filesContent)
+		userMessage.WriteString("\n")
+	}
+
+	// Add initial context
+	userMessage.WriteString("=== INITIAL CONTEXT ===\n")
+	userMessage.WriteString(string(InitialContextBytes))
+	userMessage.WriteString("\n\n")
+
+	// Add the actual query
+	userMessage.WriteString("=== QUERY ===\n")
+	if query, ok := args["query"].(string); ok {
+		userMessage.WriteString(query)
+	}
+	log.Println("TEST: ANALYSIS: ", userMessage.String()[0:20])
+	// Add as a single consolidated user message
 	ChatHistory = append(ChatHistory, map[string]any{
 		"role": "user",
 		"parts": []map[string]any{
 			{
-				"text": args["query"],
+				"text": userMessage.String(),
 			},
 		},
 	})
 
 	for {
-		// fmt.Println("Current ChatHistory:", ChatHistory)
-		if ChatHistory[len(ChatHistory)-1]["role"] == "model" {
+		// Check if last message was from model and add exit instruction if needed
+		if len(ChatHistory) > 0 && ChatHistory[len(ChatHistory)-1]["role"] == "model" {
 			ChatHistory = append(ChatHistory, map[string]any{
 				"role": "user",
-				"parts": map[string]any{
-					"text": "If you feel there is not task left and nothing to do , call exit-process. Because only that can stop you and finish the program. Don't Respond with text , No text output should be there , call the exit-process. PERIOD",
+				"parts": []map[string]any{
+					{
+						"text": "If you feel there is no task left and you have created the Analysis by calling the put-analysis-agent-output function call then and then only call exit-process. Because only that can stop you and finish the program. Don't respond with text, no text output should be there, call the exit-process. Mark It the put-analysis-agent-output should be called before exit. PERIOD",
+					},
 				},
 			})
 		}
+
 		output := p.RequestAgent(ChatHistory)
 
 		if output["error"] != nil {
@@ -140,15 +332,21 @@ func (p *AgentAnalysis) Interaction(args map[string]any) map[string]any {
 				// Execute the function
 				if function, exists := AnalysistoolsFunc[name]; exists {
 					result := function.Run(argsData)
-					if _, ok = result["exit"].(bool); ok {
 
-						analysisID := result["output"].(string)
-						analysis := AnalysisMap[analysisID]
-						analysis.QueryInputs = InputData
-						AnalysisMap[analysisID] = analysis
-						return map[string]any{"analysis-id": result["output"]}
+					// Check for exit condition
+					if _, ok := result["exit"].(bool); ok {
+						analysisID, ok := result["output"].(string)
+						if ok {
+							analysis := AnalysisMap[analysisID]
+							analysis.QueryInputs = InputData
+							AnalysisMap[analysisID] = analysis
+							return map[string]any{"analysis-id": result["output"]}
+						} else {
+							return map[string]any{"analysis-id": result}
+						}
 					}
-					// Add function response to chat history
+
+					// Add function response to chat history with proper structure
 					ChatHistory = append(ChatHistory, map[string]any{
 						"role": "user",
 						"parts": []map[string]any{
@@ -167,6 +365,16 @@ func (p *AgentAnalysis) Interaction(args map[string]any) map[string]any {
 					}
 				} else {
 					fmt.Printf("Function %s not found\n", name)
+
+					// Add error response to chat history
+					ChatHistory = append(ChatHistory, map[string]any{
+						"role": "user",
+						"parts": []map[string]any{
+							{
+								"text": fmt.Sprintf("Error: Function '%s' not found", name),
+							},
+						},
+					})
 				}
 			}
 		}
@@ -499,7 +707,6 @@ func ExitProcess(args map[string]any) map[string]any {
 	return map[string]any{"error": nil, "output": args["analysis-id"], "exit": true}
 
 }
-
 func ReadFiles(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok {
@@ -537,14 +744,20 @@ func ReadFiles(args map[string]any) map[string]any {
 		}
 		defer file.Close()
 
-		// Read all lines first
+		// Read all lines, skipping empty ones
 		scanner := bufio.NewScanner(file)
 		var lines []string
+		lineNumber := 1
 		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
+			line := scanner.Text()
+			// Skip empty lines but track line numbers
+			if strings.TrimSpace(line) != "" {
+				// Add line number prefix to non-empty lines
+				numberedLine := fmt.Sprintf("%d: %s", lineNumber, line)
+				lines = append(lines, numberedLine)
+			}
+			lineNumber++
 		}
-
-		// Don't chunk unless necessary - send complete small files
 
 		if err := scanner.Err(); err != nil {
 			readFiles[fileName] = fmt.Sprintf("Error reading file: %v", err)
@@ -571,7 +784,9 @@ func ReadFiles(args map[string]any) map[string]any {
 				var chunkContent strings.Builder
 				for j := i; j < end; j++ {
 					chunkContent.WriteString(lines[j])
-					chunkContent.WriteString("\n")
+					if j < end-1 { // Don't add newline after last line in chunk
+						chunkContent.WriteString("\n")
+					}
 				}
 
 				chunks = append(chunks, map[string]any{
@@ -581,7 +796,7 @@ func ReadFiles(args map[string]any) map[string]any {
 				})
 			}
 
-			// Handle empty file edge case
+			// Handle empty file edge case (all lines were empty)
 			if len(lines) == 0 {
 				chunks = append(chunks, map[string]any{
 					"start":   1,
@@ -592,7 +807,9 @@ func ReadFiles(args map[string]any) map[string]any {
 		}
 
 		readFiles[fileName] = chunks
-		fmt.Printf("Read file: %s (%d chunks)\n", fileName, len(chunks))
+		// Also append to the global FilesRead map
+		FilesRead[fileName] = chunks
+		fmt.Printf("Read file: %s (%d non-empty lines, %d chunks)\n", fileName, len(lines), len(chunks))
 	}
 
 	if len(notFoundFiles) > 0 {
@@ -768,32 +985,50 @@ var AnalysisCapabilities = []repository.Function{
 	},
 	{
 		Name: "read-files",
-		Description: `Reads the content of one or more files and returns them.
-Call this whenever you need to:
-- Check existing code before modifying it
-- Inspect dependencies or configuration
-- Validate if a file exists
-`,
+		Description: `Read and analyze multiple files efficiently in a single operation. 
+	
+	IMPORTANT: This function can read MULTIPLE files simultaneously - pass ALL file paths you need in the file_names array rather than calling this function multiple times for individual files.
+	
+	Key features:
+	- Reads multiple files in one call (more efficient than multiple separate calls)
+	- Automatically skips empty lines to save tokens and improve clarity
+	- Adds line numbers to each line for precise reference and debugging
+	- Chunks large files automatically for better processing
+	- Stores read files globally for reuse across the session
+	
+	Best practices:
+	- Pass ALL required file paths in a single call: ["file1.go", "file2.md", "file3.txt"]
+	- Use when you need to analyze code structure, configuration files, documentation, or any text-based content
+	- Ideal for cross-file analysis, dependency checking, or comprehensive codebase review
+	
+	Example usage scenarios:
+	- Code analysis: ["main.go", "utils.go", "config.yaml"]
+	- Documentation review: ["README.md", "CHANGELOG.md", "API.md"]
+	- Configuration audit: ["docker-compose.yml", ".env", "nginx.conf"]
+	
+	The function returns structured data with line numbers, making it easy to reference specific parts of files in subsequent analysis.`,
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
-				"file_names": {
-					Type: repository.TypeArray,
-					Items: &repository.Properties{
-						Type:        repository.TypeString,
-						Description: "Name of the file to read",
-					},
-					Description: "List/Slice of file names to read",
-				},
 				"text": {
 					Type:        repository.TypeString,
-					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+					Description: "Optional message to display to the user explaining what files you're reading and why, instead of just returning output silently",
+				},
+				"file_names": {
+					Type:        repository.TypeArray,
+					Description: "Array of file paths to read simultaneously. IMPORTANT: Include ALL files you need in this single array rather than making multiple function calls. Examples: ['main.go', 'config.yaml'], ['src/app.js', 'package.json', 'README.md']",
+					Items: &repository.Properties{
+						Type: "string",
+					},
 				},
 			},
 			Required: []string{"file_names"},
 		},
 		Service: ReadFiles,
-		Return:  repository.Return{"error": "string", "output": "map[string]any"},
+		Return: repository.Return{
+			"error":  "string - null if successful, error message if failed",
+			"output": "object - map of filename to chunks with line numbers and content",
+		},
 	},
 	{
 		Name: "put-analysis-agent-output",

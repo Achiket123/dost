@@ -321,59 +321,52 @@ func (p *AgentPlanner) NewAgent() {
 	if model == "" {
 		model = "gemini-1.5-pro"
 	}
-	endPoints := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
+
+	instructions := repository.PlannerInstructions
 
 	PlannerAgentMeta := repository.AgentMetadata{
 		ID:             "Planner-agent-v1",
 		Name:           "Planner Agent",
 		Version:        "1.0.0",
 		Type:           repository.AgentType(repository.AgentPlanner),
-		Instructions:   repository.PlannerInstructions,
+		Instructions:   instructions,
 		LastActive:     time.Now(),
 		MaxConcurrency: 5,
 		Timeout:        30 * time.Second,
 		Status:         "active",
 		Tags:           []string{"Planner", "constraints", "inputs", "outputs", "validation"},
 		Endpoints: map[string]string{
-			"http": endPoints,
+			"http": fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model),
 		},
 	}
+
 	p.Metadata = PlannerAgentMeta
 	p.Capabilities = PlannerCapabilities
+	PlannertoolsFunc = make(map[string]repository.Function)
+	for _, tool := range PlannerCapabilities {
+		PlannertoolsFunc[tool.Name] = tool
+	}
 }
 
+// Plan will use openAI API and give steps to do a work
 func Plan(args map[string]any) map[string]any {
-	Text, ok := args["text"].(string)
-	if ok {
-		fmt.Println(Text)
-	}
-	Name, ok := args["name"].(string)
-	if ok {
-		return map[string]any{"error": "insufficient parameters"}
-	}
-	Description, ok := args["description"].(string)
-	if ok {
-		return map[string]any{"error": "insufficient parameters"}
-	}
-	actions, ok := args["actions"].([]string)
-	if ok {
+	name, ok := args["name"].(string)
+	instructions, ok2 := args["instructions"].(string)
+
+	if !ok || !ok2 {
 		return map[string]any{"error": "insufficient parameters"}
 	}
 
-	plan := Plans{
-		Name:        Name,
-		Description: Description,
-		Actions:     actions,
-	}
-	data, err := json.Marshal(plan)
-	if err != nil {
-		return map[string]any{
-			"error": "unable to marshal",
-		}
-	}
+	// create tasks
+	// Define a struct to hold the task data
 
-	return map[string]any{"output": data}
+	// Marshal the tasks data into a JSON string
+
+	// Print the JSON string to the console
+
+	return map[string]any{"output": "Plan Created name is " + name + " plan are " + instructions}
 }
+
 func GetPlannerArrayMap() map[string]any {
 	return map[string]any{
 		"create_plan": map[string]any{
@@ -430,14 +423,13 @@ var PlannerCapabilities = []repository.Function{
 	},
 }
 
+// GenerateTasklist will take input from user and generate a tasklist and return to user
 func GenerateTasklist(args map[string]any) map[string]any {
 	name, ok := args["name"].(string)
+	instructions, ok2 := args["instructions"].(string)
 
-	instructions, ok := args["instructions"].(string)
-
-	if !ok {
-		return map[string]any{"error": "instructions parameters"}
+	if !ok || !ok2 {
+		return map[string]any{"error": "insufficient parameters"}
 	}
-	return map[string]any{"output": map[string]any{"name": name, "instructions": instructions}}
-
+	return map[string]any{"output": "Tasklist name is " + name + " tasklist instructions are " + instructions}
 }

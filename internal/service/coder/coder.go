@@ -6,6 +6,7 @@ import (
 	"context"
 	"dost/internal/repository"
 	"dost/internal/service"
+	"dost/internal/service/analysis"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -74,6 +76,141 @@ var defaultIgnore = map[string]bool{
 	".dost":        true,
 }
 
+type InitialContext struct {
+	OS              string
+	Arch            string
+	User            string
+	Shell           string
+	CWD             string
+	GoVersion       string
+	FolderStructure map[string]any
+	InstalledTools  []string
+	EnvVars         map[string]string
+	ProjectFiles    []string
+	ProjectType     string
+	GitBranch       string
+	InternetAccess  bool
+	AgentRole       string
+	Capabilities    []string
+	Timezone        string
+	SessionID       string
+}
+
+func GetInitialContext() InitialContext {
+	ctx := InitialContext{
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
+		User:            os.Getenv("USERNAME"),
+		Shell:           detectDefaultShell(),
+		CWD:             mustGetWorkingDir(),
+		FolderStructure: GetProjectStructure(map[string]any{"path": "./"}),
+		GoVersion:       runtime.Version(),
+		InstalledTools:  detectTools(),
+		EnvVars:         getImportantEnvVars(),
+		ProjectFiles:    scanProjectFiles(),
+		ProjectType:     detectProjectType(),
+		GitBranch:       getGitBranch(),
+		InternetAccess:  checkInternet(),
+		Timezone:        getLocalTimezone(),
+		SessionID:       generateSessionID(),
+	}
+	return ctx
+}
+
+func detectDefaultShell() string {
+	if runtime.GOOS == "windows" {
+		// prefer PowerShell if present
+		if _, err := exec.LookPath("powershell"); err == nil {
+			return "powershell"
+		}
+		return "cmd"
+	}
+	return os.Getenv("SHELL")
+}
+
+func mustGetWorkingDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return dir
+}
+
+func detectTools() []string {
+	var found []string
+	val := os.Getenv("PATH")
+	found = strings.Split(val, ";")
+	return found
+}
+
+func getImportantEnvVars() map[string]string {
+	keys := []string{"PATH", "GOROOT", "GOPATH", "JAVA_HOME"}
+	env := make(map[string]string)
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			env[k] = v
+		}
+	}
+	return env
+}
+
+func scanProjectFiles() []string {
+	files := []string{}
+	filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			if strings.HasSuffix(path, ".go") ||
+				path == "go.mod" || path == "package.json" || path == "requirements.txt" ||
+				path == "Dockerfile" || path == "README.md" {
+				files = append(files, path)
+			}
+		}
+		return nil
+	})
+	return files
+}
+
+func detectProjectType() string {
+	if _, err := os.Stat("go.mod"); err == nil {
+		return "Go project"
+	}
+	if _, err := os.Stat("package.json"); err == nil {
+		return "Node.js project"
+	}
+	if _, err := os.Stat("requirements.txt"); err == nil {
+		return "Python project"
+	}
+	return "Unknown"
+}
+
+func getGitBranch() string {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func checkInternet() bool {
+	cmd := exec.Command("ping", "-c", "1", "8.8.8.8")
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("ping", "-n", "1", "8.8.8.8")
+	}
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+func getLocalTimezone() string {
+	_, tz := time.Now().Zone()
+	return fmt.Sprintf("%d min offset", tz/60)
+}
+
+func generateSessionID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
 type AgentCoder repository.Agent
 
 const coderName = "coder"
@@ -81,33 +218,87 @@ const coderName = "coder"
 const coderVersion = "0.1.0"
 
 // args must and only contains "query"
+// Helper function to format files for Coder
+func formatFilesForCoder(filesRead map[string]any) string {
+	if len(filesRead) == 0 {
+		return ""
+	}
+
+	var result strings.Builder
+	result.WriteString("=== FILES CONTENT ===\n\n")
+
+	for fileName, fileData := range filesRead {
+		result.WriteString(fmt.Sprintf("FILE: %s\n", fileName))
+		result.WriteString("=" + strings.Repeat("=", len(fileName)+6) + "\n")
+
+		if chunks, ok := fileData.([]map[string]any); ok {
+			for _, chunk := range chunks {
+				if content, exists := chunk["content"].(string); exists {
+					result.WriteString(content)
+					result.WriteString("\n")
+				}
+			}
+		}
+		result.WriteString("\n" + strings.Repeat("-", 50) + "\n\n")
+	}
+
+	return result.String()
+}
+
 func (p *AgentCoder) Interaction(args map[string]any) map[string]any {
+	InitialContext := GetInitialContext()
+	InitialContextBytes, err := json.Marshal(InitialContext)
+	if err != nil {
+		return map[string]any{"error": "Unable to get initial context"}
+	}
+
+	var userMessage strings.Builder
+
+	filesContent := formatFilesForCoder(analysis.FilesRead)
+	if filesContent != "" {
+		userMessage.WriteString(filesContent)
+		userMessage.WriteString("\n")
+	}
+
+	// Add initial context
+	userMessage.WriteString("=== INITIAL CONTEXT ===\n")
+	userMessage.WriteString(string(InitialContextBytes))
+	userMessage.WriteString("\n\n")
+
+	// Add query
+	userMessage.WriteString("=== QUERY ===\n")
+	if query, ok := args["query"].(string); ok {
+		userMessage.WriteString(query)
+	}
+	log.Println("TEST: CODER:  ", userMessage.String()[0:20])
+	// Push consolidated user message into ChatHistory
 	ChatHistory = append(ChatHistory, map[string]any{
 		"role": "user",
 		"parts": []map[string]any{
-			{
-				"text": args["query"],
-			},
+			{"text": userMessage.String()},
 		},
 	})
 
 	for {
-		// fmt.Println("Current ChatHistory:", ChatHistory)
-		if ChatHistory[len(ChatHistory)-1]["role"] == "model" {
+		// Ensure exit-process is always enforced
+		if len(ChatHistory) > 0 && ChatHistory[len(ChatHistory)-1]["role"] == "model" {
 			ChatHistory = append(ChatHistory, map[string]any{
 				"role": "user",
-				"parts": map[string]any{
-					"text": "If you feel there is not task left and nothing to do , call exit-process. Because only that can stop you and finish the program. Don't Respond with text , No text output should be there , call the exit-process. PERIOD",
+				"parts": []map[string]any{
+					{
+						"text": "If you feel there is no task left and nothing to do, call exit-process. Because only that can stop you and finish the program. Don't respond with text, no text output should be there, call the exit-process. PERIOD",
+					},
 				},
 			})
 		}
+
 		output := p.RequestAgent(ChatHistory)
 
 		if output["error"] != nil {
 			fmt.Println("Error:", output["error"])
 			os.Exit(1)
 		}
-		fmt.Println(output)
+
 		outputData, ok := output["output"].([]map[string]any)
 		if !ok {
 			fmt.Println("ERROR CONVERTING OUTPUT")
@@ -126,13 +317,13 @@ func (p *AgentCoder) Interaction(args map[string]any) map[string]any {
 				continue
 			}
 
-			if partType == "text" {
-				// Handle text response
+			switch partType {
+			case "text":
 				if text, ok := part["data"].(string); ok {
 					fmt.Println("Agent:", text)
 				}
-			} else if partType == "functionCall" {
-				// Handle function call
+
+			case "functionCall":
 				name, nameOK := part["name"].(string)
 				argsData, argsOK := part["args"].(map[string]any)
 
@@ -146,10 +337,13 @@ func (p *AgentCoder) Interaction(args map[string]any) map[string]any {
 				// Execute the function
 				if function, exists := CodertoolsFunc[name]; exists {
 					result := function.Run(argsData)
-					if _, ok = result["exit"].(bool); ok {
+
+					// Check for exit condition
+					if _, ok := result["exit"].(bool); ok {
 						return map[string]any{"coder-id": result["output"]}
 					}
-					// Add function response to chat history
+
+					// Add function response back to chat history
 					ChatHistory = append(ChatHistory, map[string]any{
 						"role": "user",
 						"parts": []map[string]any{
@@ -162,19 +356,23 @@ func (p *AgentCoder) Interaction(args map[string]any) map[string]any {
 						},
 					})
 
-					// Display result if it's a string
 					if outputStr, ok := result["output"].(string); ok {
 						fmt.Println("Result:", outputStr)
 					}
 				} else {
 					fmt.Printf("Function %s not found\n", name)
-					break
 
+					// Add error response into chat
+					ChatHistory = append(ChatHistory, map[string]any{
+						"role": "user",
+						"parts": []map[string]any{
+							{"text": fmt.Sprintf("Error: Function '%s' not found", name)},
+						},
+					})
 				}
 			}
 		}
 
-		// Continue the conversation loop
 		fmt.Println("---")
 	}
 }
@@ -452,7 +650,7 @@ func CreateFile(data map[string]any) map[string]any {
 	}
 
 	// Handle both single file and multiple files
-	fileNames, hasFileNames := data["file_names"].([]interface{})
+	fileNames, hasFileNames := data["file_paths"].([]interface{})
 	contents, hasContents := data["contents"].([]interface{})
 
 	// Single file creation (backward compatibility)
@@ -479,11 +677,11 @@ func CreateFile(data map[string]any) map[string]any {
 
 	// Multiple files creation
 	if !hasFileNames || !hasContents {
-		return map[string]any{"error": "file_names and contents are required"}
+		return map[string]any{"error": "file_paths and contents are required"}
 	}
 
 	if len(fileNames) != len(contents) {
-		return map[string]any{"error": "file_names and contents arrays must have the same length"}
+		return map[string]any{"error": "file_paths and contents arrays must have the same length"}
 	}
 
 	var createdFiles []string
@@ -542,10 +740,10 @@ func ReadFiles(args map[string]any) map[string]any {
 		fmt.Printf("CODER: %s", text)
 	}
 
-	fileNames, ok := args["file_names"].([]interface{})
+	fileNames, ok := args["file_paths"].([]interface{})
 	if !ok {
 		return map[string]any{
-			"error":  "Invalid arguments: 'file_names' must be a slice of strings",
+			"error":  "Invalid arguments: 'file_paths' must be a slice of strings",
 			"output": nil,
 		}
 	}
@@ -554,8 +752,9 @@ func ReadFiles(args map[string]any) map[string]any {
 	for _, v := range fileNames {
 		s, ok := v.(string)
 		if !ok {
+			log.Fatal("Invalid argument: 'file_paths' contains non-string values")
 			return map[string]any{
-				"error":  "Invalid argument: 'file_names' contains non-string values",
+				"error":  "Invalid argument: 'file_paths' contains non-string values",
 				"output": nil,
 			}
 		}
@@ -573,14 +772,20 @@ func ReadFiles(args map[string]any) map[string]any {
 		}
 		defer file.Close()
 
-		// Read all lines first
+		// Read all lines, skipping empty ones
 		scanner := bufio.NewScanner(file)
 		var lines []string
+		lineNumber := 1
 		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
+			line := scanner.Text()
+			// Skip empty lines but track line numbers
+			if strings.TrimSpace(line) != "" {
+				// Add line number prefix to non-empty lines
+				numberedLine := fmt.Sprintf("%d: %s", lineNumber, line)
+				lines = append(lines, numberedLine)
+			}
+			lineNumber++
 		}
-
-		// Don't chunk unless necessary - send complete small files
 
 		if err := scanner.Err(); err != nil {
 			readFiles[fileName] = fmt.Sprintf("Error reading file: %v", err)
@@ -607,7 +812,9 @@ func ReadFiles(args map[string]any) map[string]any {
 				var chunkContent strings.Builder
 				for j := i; j < end; j++ {
 					chunkContent.WriteString(lines[j])
-					chunkContent.WriteString("\n")
+					if j < end-1 { // Don't add newline after last line in chunk
+						chunkContent.WriteString("\n")
+					}
 				}
 
 				chunks = append(chunks, map[string]any{
@@ -617,7 +824,7 @@ func ReadFiles(args map[string]any) map[string]any {
 				})
 			}
 
-			// Handle empty file edge case
+			// Handle empty file edge case (all lines were empty)
 			if len(lines) == 0 {
 				chunks = append(chunks, map[string]any{
 					"start":   1,
@@ -628,7 +835,9 @@ func ReadFiles(args map[string]any) map[string]any {
 		}
 
 		readFiles[fileName] = chunks
-		fmt.Printf("Read file: %s (%d chunks)\n", fileName, len(chunks))
+		// Also append to the global FilesRead map
+		analysis.FilesRead[fileName] = chunks
+		fmt.Printf("Read file: %s (%d non-empty lines, %d chunks)\n", fileName, len(lines), len(chunks))
 	}
 
 	if len(notFoundFiles) > 0 {
@@ -637,6 +846,7 @@ func ReadFiles(args map[string]any) map[string]any {
 
 	return map[string]any{"error": nil, "output": readFiles}
 }
+
 func ExecuteCommands(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok {
@@ -1174,7 +1384,7 @@ Revolutionary Capabilities:
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
-				"file_names": {
+				"file_paths": {
 					Type:        repository.TypeArray,
 					Items:       &repository.Properties{Type: repository.TypeString},
 					Description: "Array of file paths with intelligent path resolution, directory auto-creation, and naming conflict prevention (e.g., ['src/utils/helper.ts', 'tests/helper.test.ts']).",
@@ -1185,7 +1395,7 @@ Revolutionary Capabilities:
 					Description: "Corresponding content array with template processing, encoding optimization, and syntax validation for each file creation.",
 				},
 			},
-			Required: []string{"file_names", "contents"},
+			Required: []string{"file_paths", "contents"},
 		},
 		Service: CreateFile,
 		Return: repository.Return{
@@ -1210,7 +1420,7 @@ Advanced Intelligence:
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
-				"file_names": {
+				"file_paths": {
 					Type: repository.TypeArray,
 					Items: &repository.Properties{
 						Type:        repository.TypeString,
@@ -1223,7 +1433,7 @@ Advanced Intelligence:
 					Description: "Context description explaining the purpose of reading these files for enhanced logging and operation tracking.",
 				},
 			},
-			Required: []string{"file_names"},
+			Required: []string{"file_paths"},
 		},
 		Service: ReadFiles,
 		Return: repository.Return{

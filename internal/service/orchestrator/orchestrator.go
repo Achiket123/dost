@@ -204,43 +204,83 @@ func generateSessionID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// Helper function to format files for Orchestrator
+func formatFilesForOrchestrator(filesRead map[string]any) string {
+	if len(filesRead) == 0 {
+		return ""
+	}
+
+	var result strings.Builder
+	result.WriteString("=== FILES CONTENT ===\n\n")
+
+	for fileName, fileData := range filesRead {
+		result.WriteString(fmt.Sprintf("FILE: %s\n", fileName))
+		result.WriteString("=" + strings.Repeat("=", len(fileName)+6) + "\n")
+
+		if chunks, ok := fileData.([]map[string]any); ok {
+			for _, chunk := range chunks {
+				if content, exists := chunk["content"].(string); exists {
+					result.WriteString(content)
+					result.WriteString("\n")
+				}
+			}
+		}
+		result.WriteString("\n" + strings.Repeat("-", 50) + "\n\n")
+	}
+
+	return result.String()
+}
+
 func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 	InitialContext := GetInitialContext()
 	InitialContextBytes, err := json.Marshal(InitialContext)
 	if err != nil {
 		return map[string]any{"error": "Unable to get initial context"}
-
 	}
 
-	ChatHistory = append(ChatHistory, []map[string]any{
-		{"role": "user",
-			"parts": []map[string]any{
-				{
-					"text": string(InitialContextBytes),
-				},
-			},
-		},
-		{
+	// Build consolidated user message
+	var userMessage strings.Builder
 
-			"role": "user",
-			"parts": []map[string]any{
-				{
-					"text": args["query"],
-				},
-			},
+	// Add files content (from analysis)
+	filesContent := formatFilesForOrchestrator(analysis.FilesRead)
+	if filesContent != "" {
+		userMessage.WriteString(filesContent)
+		userMessage.WriteString("\n")
+	}
+
+	// Add initial context
+	userMessage.WriteString("=== INITIAL CONTEXT ===\n")
+	userMessage.WriteString(string(InitialContextBytes))
+	userMessage.WriteString("\n\n")
+
+	// Add query
+	userMessage.WriteString("=== QUERY ===\n")
+	if query, ok := args["query"].(string); ok {
+		userMessage.WriteString(query)
+	}
+	log.Println("TEST: ORCHESTRATOR:  ", userMessage.String()[0:20])
+
+	// Push consolidated user message into ChatHistory
+	ChatHistory = append(ChatHistory, map[string]any{
+		"role": "user",
+		"parts": []map[string]any{
+			{"text": userMessage.String()},
 		},
-	}...)
+	})
 
 	for {
-		// fmt.Println("Current ChatHistory:", ChatHistory)
-		if ChatHistory[len(ChatHistory)-1]["role"] == "model" {
+		// Check if last model response requires exit instruction
+		if len(ChatHistory) > 0 && ChatHistory[len(ChatHistory)-1]["role"] == "model" {
 			ChatHistory = append(ChatHistory, map[string]any{
 				"role": "user",
-				"parts": map[string]any{
-					"text": "If you feel there is not task left and nothing to do , call exit-process. Because only that can stop you and finish the program. Don't Respond with text , No text output should be there , call the exit-process. PERIOD",
+				"parts": []map[string]any{
+					{
+						"text": "If you feel there is no task left and nothing to do, call exit-process. Because only that can stop you and finish the program. Don't respond with text, no text output should be there, call the exit-process. PERIOD",
+					},
 				},
 			})
 		}
+
 		output := p.RequestAgent(ChatHistory)
 
 		if output["error"] != nil {
@@ -266,30 +306,29 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 				continue
 			}
 
-			if partType == "text" {
-				// Handle text response
+			switch partType {
+			case "text":
 				if text, ok := part["data"].(string); ok {
 					fmt.Println("Agent:", text)
 				}
-			} else if partType == "functionCall" {
-				// Handle function call
+
+			case "functionCall":
 				name, nameOK := part["name"].(string)
 				argsData, argsOK := part["args"].(map[string]any)
-
 				if !nameOK || !argsOK {
 					fmt.Println("Error: invalid function call data")
 					continue
 				}
 
 				fmt.Println("Calling function:", name)
-
-				// Execute the function
 				if function, exists := OrchestratortoolsFunc[name]; exists {
 					result := function.Run(argsData)
-					fmt.Println(result)
-					if _, ok = result["exit"].(bool); ok {
+
+					// Check for exit condition
+					if _, ok := result["exit"].(bool); ok {
 						return nil
 					}
+
 					// Add function response to chat history
 					ChatHistory = append(ChatHistory, map[string]any{
 						"role": "user",
@@ -303,20 +342,26 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 						},
 					})
 
-					// Display result if it's a string
 					if outputStr, ok := result["output"].(string); ok {
 						fmt.Println("Result:", outputStr)
 					}
 				} else {
 					fmt.Printf("Function %s not found\n", name)
+
+					ChatHistory = append(ChatHistory, map[string]any{
+						"role": "user",
+						"parts": []map[string]any{
+							{"text": fmt.Sprintf("Error: Function '%s' not found", name)},
+						},
+					})
 				}
 			}
 		}
 
-		// Continue the conversation loop
 		fmt.Println("---")
 	}
 }
+
 func (p *AgentOrchestrator) NewAgent() {
 	model := viper.GetString("ORCHESTRATOR.MODEL")
 	if model == "" {
@@ -325,7 +370,7 @@ func (p *AgentOrchestrator) NewAgent() {
 	endPoints := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
 
 	analysisAgentMeta := repository.AgentMetadata{
-		ID:             "analysis-agent-v1",
+		ID:             "Orchestrator-agent-v1",
 		Name:           "Orchestrator Agent",
 		Version:        "1.0.0",
 		Type:           repository.AgentType(repository.AgentOrchestrator),
@@ -629,7 +674,7 @@ func ExitProcess(args map[string]any) map[string]any {
 func ReadFiles(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok {
-		fmt.Printf("ORCH: %s", text)
+		fmt.Printf("ORCHESTRATOR: %s", text)
 	}
 
 	fileNames, ok := args["file_names"].([]interface{})
@@ -663,14 +708,20 @@ func ReadFiles(args map[string]any) map[string]any {
 		}
 		defer file.Close()
 
-		// Read all lines first
+		// Read all lines, skipping empty ones
 		scanner := bufio.NewScanner(file)
 		var lines []string
+		lineNumber := 1
 		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
+			line := scanner.Text()
+			// Skip empty lines but track line numbers
+			if strings.TrimSpace(line) != "" {
+				// Add line number prefix to non-empty lines
+				numberedLine := fmt.Sprintf("%d: %s", lineNumber, line)
+				lines = append(lines, numberedLine)
+			}
+			lineNumber++
 		}
-
-		// Don't chunk unless necessary - send complete small files
 
 		if err := scanner.Err(); err != nil {
 			readFiles[fileName] = fmt.Sprintf("Error reading file: %v", err)
@@ -697,7 +748,9 @@ func ReadFiles(args map[string]any) map[string]any {
 				var chunkContent strings.Builder
 				for j := i; j < end; j++ {
 					chunkContent.WriteString(lines[j])
-					chunkContent.WriteString("\n")
+					if j < end-1 { // Don't add newline after last line in chunk
+						chunkContent.WriteString("\n")
+					}
 				}
 
 				chunks = append(chunks, map[string]any{
@@ -707,7 +760,7 @@ func ReadFiles(args map[string]any) map[string]any {
 				})
 			}
 
-			// Handle empty file edge case
+			// Handle empty file edge case (all lines were empty)
 			if len(lines) == 0 {
 				chunks = append(chunks, map[string]any{
 					"start":   1,
@@ -718,7 +771,9 @@ func ReadFiles(args map[string]any) map[string]any {
 		}
 
 		readFiles[fileName] = chunks
-		fmt.Printf("Read file: %s (%d chunks)\n", fileName, len(chunks))
+		// Also append to the global FilesRead map
+		analysis.FilesRead[fileName] = chunks
+		fmt.Printf("Read file: %s (%d non-empty lines, %d chunks)\n", fileName, len(lines), len(chunks))
 	}
 
 	if len(notFoundFiles) > 0 {
@@ -1070,12 +1125,26 @@ func ExecuteCommands(args map[string]any) map[string]any {
 func EditFile(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok {
-		fmt.Printf("CODER: %s\n", text)
+		fmt.Printf("ORCHESTRATOR: %s\n", text)
 	}
 
 	filepathInput, ok := args["file_path"].(string)
 	if !ok {
 		return map[string]any{"error": "ERROR READING PATH"}
+	}
+
+	// SECURITY CHECK: Verify this is not a coding file
+	if isCodingFile(filepathInput) {
+		return map[string]any{
+			"error": fmt.Sprintf("OPERATION BLOCKED: '%s' appears to be a programming/coding file. This function is restricted to text-only files (.txt, .md, .rst, .log, .csv, .json, .xml, .yaml, .yml, .html, .css, .ini, .cfg, .conf, .rtf, .tex) to prevent accidental modification of source code.", filepathInput),
+		}
+	}
+
+	// SECURITY CHECK: Verify this is an allowed text file type
+	if !isAllowedTextFile(filepathInput) {
+		return map[string]any{
+			"error": fmt.Sprintf("OPERATION BLOCKED: '%s' file type is not allowed. Only text files (.txt, .md, .rst, .log, .csv, .json, .xml, .yaml, .yml, .html, .css, .ini, .cfg, .conf, .rtf, .tex) can be edited by this function.", filepathInput),
+		}
 	}
 
 	changes, ok := args["changes"].([]interface{})
@@ -1111,7 +1180,6 @@ func EditFile(args map[string]any) map[string]any {
 			return map[string]any{"error": "INVALID CHANGE FORMAT"}
 		}
 
-		// Fixed the syntax errors here
 		startLine, _ := toInt(ch["start_line_number"])
 		startCol, _ := toInt(ch["start_line_col"])
 		endLine, _ := toInt(ch["end_line_number"])
@@ -1192,7 +1260,9 @@ func EditFile(args map[string]any) map[string]any {
 		return map[string]any{"error": "CANNOT WRITE TO FILE: " + err.Error()}
 	}
 
-	return map[string]any{"output": "Successfully written the content you provided"}
+	return map[string]any{
+		"output": fmt.Sprintf("Successfully edited text file: %s", filepathInput),
+	}
 }
 func GetProjectStructure(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
@@ -1269,6 +1339,96 @@ func getProjectStructureRecursive(path string, prefix string, builder *strings.B
 
 	return nil
 }
+func isAllowedTextFile(filePath string) bool {
+	// Get file extension and convert to lowercase
+	ext := strings.ToLower(filepath.Ext(filePath))
+
+	// Define allowed text file extensions
+	allowedExtensions := map[string]bool{
+		".txt":  true, // Plain text files
+		".md":   true, // Markdown files
+		".rst":  true, // reStructuredText files
+		".log":  true, // Log files
+		".csv":  true, // Comma-separated values
+		".json": true, // JSON data files
+		".xml":  true, // XML files
+		".yaml": true, // YAML files
+		".yml":  true, // YAML files (alternate extension)
+		".html": true, // HTML markup (content files, not code)
+		".css":  true, // CSS stylesheets (content files, not code)
+		".ini":  true, // Configuration files
+		".cfg":  true, // Configuration files
+		".conf": true, // Configuration files
+		".rtf":  true, // Rich Text Format
+		".tex":  true, // LaTeX files
+		"":      true, // Files without extension (often text files)
+	}
+
+	return allowedExtensions[ext]
+}
+
+// isCodingFile checks if the file extension belongs to programming/coding files
+func isCodingFile(filePath string) bool {
+	// Get file extension and convert to lowercase
+	ext := strings.ToLower(filepath.Ext(filePath))
+
+	// Define blocked coding file extensions
+	codingExtensions := map[string]bool{
+		// Popular programming languages
+		".go":    true, // Go
+		".py":    true, // Python
+		".js":    true, // JavaScript
+		".ts":    true, // TypeScript
+		".jsx":   true, // React JSX
+		".tsx":   true, // TypeScript JSX
+		".java":  true, // Java
+		".c":     true, // C
+		".cpp":   true, // C++
+		".cc":    true, // C++
+		".cxx":   true, // C++
+		".h":     true, // C/C++ headers
+		".hpp":   true, // C++ headers
+		".php":   true, // PHP
+		".rb":    true, // Ruby
+		".swift": true, // Swift
+		".kt":    true, // Kotlin
+		".rs":    true, // Rust
+		".vue":   true, // Vue.js
+		".scala": true, // Scala
+		".r":     true, // R
+		".m":     true, // Objective-C/MATLAB
+		".pl":    true, // Perl
+		".lua":   true, // Lua
+		".dart":  true, // Dart
+		".elm":   true, // Elm
+		".clj":   true, // Clojure
+		".hs":    true, // Haskell
+		".f90":   true, // Fortran
+		".pas":   true, // Pascal
+		".asm":   true, // Assembly
+
+		// Script files
+		".sh":   true, // Shell scripts
+		".bash": true, // Bash scripts
+		".zsh":  true, // Zsh scripts
+		".fish": true, // Fish scripts
+		".bat":  true, // Windows batch files
+		".cmd":  true, // Windows command files
+		".ps1":  true, // PowerShell scripts
+
+		// Database
+		".sql": true, // SQL files
+
+		// Build and config files that contain code
+		".makefile":   true, // Makefiles
+		".dockerfile": true, // Docker files
+		".gradle":     true, // Gradle build files
+		".maven":      true, // Maven files
+		".cmake":      true, // CMake files
+	}
+
+	return codingExtensions[ext]
+}
 
 var OrchestratorCapabilities = []repository.Function{{
 	Name: "execute-command-in-terminal",
@@ -1313,7 +1473,7 @@ Example: { "command": "git", "arguments": ["commit", "-m", "testing through this
 },
 	{
 		Name:        "edit-file",
-		Description: "Edits a file at a given path by applying a specified change or replacement to its content.",
+		Description: "Edits ONLY text-based files (txt, md, rst, log, csv, json, xml, yaml, yml, html, css, ini, cfg, conf, rtf, tex) at a given path by applying specified changes. This function is STRICTLY RESTRICTED to non-coding files to prevent accidental modification of source code. Programming files (.go, .py, .js, .java, .c, .cpp, .h, .php, .rb, .swift, .kt, .rs, .ts, .jsx, .tsx, .vue, .scala, .sh, .bat, .ps1, .sql, .r, .m, .pl, .lua, .dart, .elm, .clj, .hs, .f90, .pas, .asm, etc.) are explicitly blocked for safety.",
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
@@ -1323,11 +1483,11 @@ Example: { "command": "git", "arguments": ["commit", "-m", "testing through this
 				},
 				"file_path": {
 					Type:        repository.TypeString,
-					Description: "The path of the file to edit. Example: './folder/file.go'.",
+					Description: "The path of the TEXT FILE to edit (only .txt, .md, .rst, .log, .csv, .json, .xml, .yaml, .yml, .html, .css, .ini, .cfg, .conf, .rtf, .tex files allowed). Example: './folder/document.txt' or './notes.md'. Programming files are blocked.",
 				},
 				"changes": {
 					Type:        repository.TypeArray,
-					Description: "A list of changes to apply to the file, with each change specifying a selection and an operation.",
+					Description: "A list of changes to apply to the text file, with each change specifying a selection and an operation.",
 					Items: &repository.Properties{
 						Type:        repository.TypeObject,
 						Description: "Operation Meta data",
@@ -1599,18 +1759,38 @@ Each task must have an ID and can have optional description, agent_id, inputs, d
 
 	{
 		Name: "read-files",
-		Description: `Read the contents of one or more files from the filesystem.
-Use this to analyze code, configuration files, or any text-based files.`,
+		Description: `Read and analyze multiple files efficiently in a single operation. 
+	
+	IMPORTANT: This function can read MULTIPLE files simultaneously - pass ALL file paths you need in the file_names array rather than calling this function multiple times for individual files.
+	
+	Key features:
+	- Reads multiple files in one call (more efficient than multiple separate calls)
+	- Automatically skips empty lines to save tokens and improve clarity
+	- Adds line numbers to each line for precise reference and debugging
+	- Chunks large files automatically for better processing
+	- Stores read files globally for reuse across the session
+	
+	Best practices:
+	- Pass ALL required file paths in a single call: ["file1.go", "file2.md", "file3.txt"]
+	- Use when you need to analyze code structure, configuration files, documentation, or any text-based content
+	- Ideal for cross-file analysis, dependency checking, or comprehensive codebase review
+	
+	Example usage scenarios:
+	- Code analysis: ["main.go", "utils.go", "config.yaml"]
+	- Documentation review: ["README.md", "CHANGELOG.md", "API.md"]
+	- Configuration audit: ["docker-compose.yml", ".env", "nginx.conf"]
+	
+	The function returns structured data with line numbers, making it easy to reference specific parts of files in subsequent analysis.`,
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
 				"text": {
 					Type:        repository.TypeString,
-					Description: "A text which you want to say to user, instead of returning text output give it in this parameter",
+					Description: "Optional message to display to the user explaining what files you're reading and why, instead of just returning output silently",
 				},
 				"file_names": {
 					Type:        repository.TypeArray,
-					Description: "Array of file paths to read",
+					Description: "Array of file paths to read simultaneously. IMPORTANT: Include ALL files you need in this single array rather than making multiple function calls. Examples: ['main.go', 'config.yaml'], ['src/app.js', 'package.json', 'README.md']",
 					Items: &repository.Properties{
 						Type: "string",
 					},
@@ -1619,7 +1799,10 @@ Use this to analyze code, configuration files, or any text-based files.`,
 			Required: []string{"file_names"},
 		},
 		Service: ReadFiles,
-		Return:  repository.Return{"error": "string", "output": "object"},
+		Return: repository.Return{
+			"error":  "string - null if successful, error message if failed",
+			"output": "object - map of filename to chunks with line numbers and content",
+		},
 	},
 }
 
