@@ -17,7 +17,6 @@ import (
 )
 
 var ChatHistory = make([]map[string]any, 0)
-var CodertoolsFunc map[string]repository.Function = make(map[string]repository.Function)
 var ignoreMatcher *gitignore.GitIgnore
 var PlannertoolsFunc map[string]repository.Function = make(map[string]repository.Function)
 
@@ -144,7 +143,7 @@ func (p *AgentPlanner) Interaction(args map[string]any) map[string]any {
 }
 
 func (c *AgentPlanner) RequestAgent(contents []map[string]any) map[string]any {
-	fmt.Printf("Processing request with Coder Agent: %s\n", c.Metadata.Name)
+	fmt.Printf("Processing request with Planner Agent: %s\n", c.Metadata.Name)
 
 	// Build request payload
 	request := map[string]any{
@@ -160,7 +159,7 @@ func (c *AgentPlanner) RequestAgent(contents []map[string]any) map[string]any {
 		},
 		"contents": contents,
 		"tools": []map[string]any{
-			{"functionDeclarations": GetCoderPlannerArrayMap()},
+			{"functionDeclarations": GetPlannerArrayMap()},
 		},
 	}
 
@@ -187,7 +186,7 @@ func (c *AgentPlanner) RequestAgent(contents []map[string]any) map[string]any {
 		}
 
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-goog-api-key", viper.GetString("CODER.API_KEY"))
+		req.Header.Set("X-goog-api-key", viper.GetString("PLANNER.API_KEY"))
 
 		// Execute request with timeout
 		client := &http.Client{Timeout: c.Metadata.Timeout}
@@ -376,7 +375,7 @@ func Plan(args map[string]any) map[string]any {
 	return map[string]any{"output": data}
 }
 
-func GetCoderPlannerArrayMap() map[string]any {
+func GetPlannerArrayMap() map[string]any {
 	return nil
 }
 
