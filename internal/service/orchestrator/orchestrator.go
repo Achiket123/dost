@@ -8,6 +8,7 @@ import (
 	"dost/internal/service"
 	"dost/internal/service/analysis"
 	"dost/internal/service/coder"
+	"dost/internal/service/planner"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -430,8 +431,12 @@ func AskAnAgent(args map[string]any) map[string]any {
 		}
 
 		result = map[string]any{"analysis": string(jsonBytes)}
-	case "planning":
-		// result = PlanningAgent(task)
+	case "planner":
+		planAgent := planner.AgentPlanner{}
+		planAgent.NewAgent()
+		planAgent.Interaction(map[string]any{
+			"query": fmt.Sprintf("Here is the Task do a detail planning for this task: \" %s\", Don't assume anything ask the user for any clearence you want. Don't hallucinate!", task),
+		})
 	case "coder":
 		// Enhanced version with proper analysis checking and query enhancement
 		analysis_id, hasAnalysisId := args["analysis-id"].(string)
@@ -1681,7 +1686,7 @@ Available agents:
 				"agent_id": {
 					Type:        repository.TypeString,
 					Description: "The ID of the agent to route the task to (analysis, planning, execution)",
-					Enum:        []string{"analysis", "coder"},
+					Enum:        []string{"analysis", "coder", "planner"},
 				},
 				"task": {
 					Type:        repository.TypeString,
