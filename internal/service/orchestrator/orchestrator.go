@@ -423,14 +423,19 @@ func AskAnAgent(args map[string]any) map[string]any {
 		}
 		fmt.Println(query["query"])
 		analysisOutPut := anaAgent.Interaction(query)["analysis-id"]
-		analysisResult := analysis.AnalysisMap[analysisOutPut.(string)]
-		jsonBytes, err := json.MarshalIndent(analysisResult, "", "  ")
-		if err != nil {
-			fmt.Println("X Error marshalling JSON:", err)
-			return nil
+		analysisOutPutStr, ok := analysisOutPut.(string)
+		if ok {
+			analysisResult := analysis.AnalysisMap[analysisOutPutStr]
+			jsonBytes, err := json.MarshalIndent(analysisResult, "", "  ")
+			if err != nil {
+				fmt.Println("X Error marshalling JSON:", err)
+				return nil
+			}
+			result = map[string]any{"analysis": string(jsonBytes)}
+		} else {
+			result = map[string]any{"analysis": analysisOutPut}
 		}
 
-		result = map[string]any{"analysis": string(jsonBytes)}
 	case "planner":
 		planAgent := planner.AgentPlanner{}
 		planAgent.NewAgent()
@@ -826,12 +831,24 @@ func WriteFile(args map[string]any) map[string]any {
 
 	for i, v := range fileNamesSlice {
 		fileName := v.(string)
+		if isCodingFile(fileName) {
+			return map[string]any{
+				"error": fmt.Sprintf("OPERATION BLOCKED: '%s' appears to be a programming/coding file. This function is restricted to text-only files (.txt, .md, .rst, .log, .csv, .json, .xml, .yaml, .yml, .html, .css, .ini, .cfg, .conf, .rtf, .tex) to prevent accidental modification of source code.", fileName),
+			}
+		}
+
+		// SECURITY CHECK: Verify this is an allowed text file type
+		if !isAllowedTextFile(fileName) {
+			return map[string]any{
+				"error": fmt.Sprintf("OPERATION BLOCKED: '%s' file type is not allowed. Only text files (.txt, .md, .rst, .log, .csv, .json, .xml, .yaml, .yml, .html, .css, .ini, .cfg, .conf, .rtf, .tex) can be edited by this function.", fileName),
+			}
+		}
 		content := contentsSlice[i].(string)
 
 		// Determine the offset for the current file
 		var offset int64
 		if hasOffsets {
-			offset = int64(offsetsSlice[i].(float64)) // JSON numbers are float64 in Go
+			offset = int64(offsetsSlice[i].(float64))
 			if offset < 0 {
 				errors = append(errors, fmt.Errorf("invalid offset for file %s: offset must be non-negative", fileName))
 				continue
@@ -1374,12 +1391,10 @@ func isAllowedTextFile(filePath string) bool {
 
 // isCodingFile checks if the file extension belongs to programming/coding files
 func isCodingFile(filePath string) bool {
-	// Get file extension and convert to lowercase
 	ext := strings.ToLower(filepath.Ext(filePath))
 
-	// Define blocked coding file extensions
 	codingExtensions := map[string]bool{
-		// Popular programming languages
+
 		".go":    true, // Go
 		".py":    true, // Python
 		".js":    true, // JavaScript
@@ -1412,7 +1427,6 @@ func isCodingFile(filePath string) bool {
 		".pas":   true, // Pascal
 		".asm":   true, // Assembly
 
-		// Script files
 		".sh":   true, // Shell scripts
 		".bash": true, // Bash scripts
 		".zsh":  true, // Zsh scripts
@@ -1421,10 +1435,8 @@ func isCodingFile(filePath string) bool {
 		".cmd":  true, // Windows command files
 		".ps1":  true, // PowerShell scripts
 
-		// Database
 		".sql": true, // SQL files
 
-		// Build and config files that contain code
 		".makefile":   true, // Makefiles
 		".dockerfile": true, // Docker files
 		".gradle":     true, // Gradle build files
@@ -1632,7 +1644,7 @@ This tool provides COMPLETE file manipulation capabilities, enabling:
 - Append a new migration entry into a SQL file.
 - Patch a corrupted section of a binary executable.
 - Programmatically generate structured text/data files.
-
+- ONLY text-based files (txt, md, rst, log, csv, json, xml, yaml, yml, html, css, ini, cfg, conf, rtf, tex) at a given path by applying specified changes. This function is STRICTLY RESTRICTED to non-coding files to prevent accidental modification of source code. Programming files (.go, .py, .js, .java, .c, .cpp, .h, .php, .rb, .swift, .kt, .rs, .ts, .jsx, .tsx, .vue, .scala, .sh, .bat, .ps1, .sql, .r, .m, .pl, .lua, .dart, .elm, .clj, .hs, .f90, .pas, .asm, etc.) are explicitly blocked for safety.
 This tool is your gateway to precise file manipulation and content management. Use it to create, append, overwrite, and manage files across any project lifecycle with full byte-level control.`,
 
 		Parameters: repository.Parameters{

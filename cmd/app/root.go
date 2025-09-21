@@ -51,7 +51,6 @@ func init() {
 	rootCmd.Run = handleUserQuery
 	rootCmd.PersistentFlags().BoolVar(&service.TakePermission, "yes", false, "PLEASE TELL US YOUR QUERY")
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file default is C:/.dost.yaml")
-	rootCmd.PersistentFlags().String("ai", "", "AI query for Gemini API")
 	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 func handleUserQuery(cmd *cobra.Command, args []string) {
