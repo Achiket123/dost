@@ -1074,7 +1074,7 @@ func GetProjectStructure(args map[string]any) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err, "output": nil}
 	}
-	fmt.Println(builder.String())
+	 
 	if builder.String() == "." || builder.String() == "" {
 		return map[string]any{"error": nil, "output": "<empty directory>"}
 	}
