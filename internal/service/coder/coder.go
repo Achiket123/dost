@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	gitignore "github.com/sabhiram/go-gitignore"
@@ -59,11 +60,11 @@ Optimized for complex refactoring, code generation, and automated maintenance ta
 const RequestUserInputDescription = `Interactive terminal interface for real-time user communication and decision-making workflows. 
 Provides formatted input prompts with validation, timeout handling, and context-aware questioning. 
 Essential for gathering requirements, confirming destructive operations, and obtaining user preferences during development.`
-
-var ChatHistory = make([]map[string]any, 0)
+ 
 var CodertoolsFunc map[string]repository.Function = make(map[string]repository.Function)
 var ignoreMatcher *gitignore.GitIgnore
 
+var ChatHistory = make([]map[string]any, 0)
 var defaultIgnore = map[string]bool{
 	".git":         true,
 	"node_modules": true,
@@ -94,6 +95,15 @@ type InitialContext struct {
 	Capabilities    []string
 	Timezone        string
 	SessionID       string
+}
+type changeInfo struct {
+	startLine int
+	startCol  int
+	endLine   int
+	endCol    int
+	operation string
+	content   string
+	valid     bool
 }
 
 func GetInitialContext() InitialContext {
@@ -520,7 +530,7 @@ func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 				}
 				if len(parts) > 0 {
 					ChatHistory = append(ChatHistory, map[string]any{
-						"role":  response.Candidates[0].Content.Role,
+						"role":  "coder",
 						"parts": parts,
 					})
 				}
@@ -929,6 +939,7 @@ func ExecuteCommands(args map[string]any) map[string]any {
 
 // EditFile edits a file at a given path.
 // Piece Table - what is it ??
+
 func EditFile(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok {
@@ -945,15 +956,7 @@ func EditFile(args map[string]any) map[string]any {
 		return map[string]any{"error": "REQUIRED CHANGES MAP"}
 	}
 
-	// Convert changes into structured format
-	type changeInfo struct {
-		startLine int
-		startCol  int
-		endLine   int
-		endCol    int
-		operation string
-		content   string
-	}
+	// Enhanced change structure with validation
 
 	toInt := func(v any) (int, bool) {
 		switch val := v.(type) {
@@ -967,19 +970,42 @@ func EditFile(args map[string]any) map[string]any {
 	}
 
 	var processedChanges []changeInfo
-	for _, c := range changes {
+	for i, c := range changes {
 		ch, ok := c.(map[string]any)
 		if !ok {
-			return map[string]any{"error": "INVALID CHANGE FORMAT"}
+			return map[string]any{"error": fmt.Sprintf("INVALID CHANGE FORMAT at index %d", i)}
 		}
 
-		// Fixed the syntax errors here
-		startLine, _ := toInt(ch["start_line_number"])
-		startCol, _ := toInt(ch["start_line_col"])
-		endLine, _ := toInt(ch["end_line_number"])
-		endCol, _ := toInt(ch["end_line_col"])
-		operation, _ := ch["operation"].(string)
-		content, _ := ch["content"].(string)
+		startLine, startLineOk := toInt(ch["start_line_number"])
+		startCol, startColOk := toInt(ch["start_line_col"])
+		endLine, endLineOk := toInt(ch["end_line_number"])
+		endCol, endColOk := toInt(ch["end_line_col"])
+		operation, operationOk := ch["operation"].(string)
+		content, contentOk := ch["content"].(string)
+
+		// Validate all required fields are present and correct type
+		if !startLineOk || !startColOk || !endLineOk || !endColOk || !operationOk || !contentOk {
+			return map[string]any{"error": fmt.Sprintf("MISSING OR INVALID FIELDS in change %d", i)}
+		}
+
+		// Validate operation type
+		if operation != "delete" && operation != "replace" && operation != "write" {
+			return map[string]any{"error": fmt.Sprintf("INVALID OPERATION '%s' in change %d. Must be 'delete', 'replace', or 'write'", operation, i)}
+		}
+
+		// Validate line/column numbers make sense
+		if startLine < 1 || endLine < 1 {
+			return map[string]any{"error": fmt.Sprintf("LINE NUMBERS must be >= 1 in change %d", i)}
+		}
+
+		if startCol < 0 || endCol < 0 {
+			return map[string]any{"error": fmt.Sprintf("COLUMN NUMBERS must be >= 0 in change %d", i)}
+		}
+
+		// For single-line operations, validate column order
+		if startLine == endLine && startCol > endCol && operation != "write" {
+			return map[string]any{"error": fmt.Sprintf("START COLUMN cannot be > END COLUMN on same line in change %d", i)}
+		}
 
 		processedChanges = append(processedChanges, changeInfo{
 			startLine: startLine,
@@ -988,10 +1014,51 @@ func EditFile(args map[string]any) map[string]any {
 			endCol:    endCol,
 			operation: operation,
 			content:   content,
+			valid:     true,
 		})
 	}
 
-	// Sort changes by start line & col (descending to avoid position conflicts)
+	// Read file with better error handling
+	fileContent, err := os.ReadFile(filepathInput)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{"error": fmt.Sprintf("FILE NOT FOUND: %s", filepathInput)}
+		}
+		return map[string]any{"error": fmt.Sprintf("CANNOT READ FILE: %s - %v", filepathInput, err)}
+	}
+
+	// Handle different line endings
+	content := string(fileContent)
+	content = strings.ReplaceAll(content, "\r\n", "\n") // Windows -> Unix
+	content = strings.ReplaceAll(content, "\r", "\n")   // Old Mac -> Unix
+	lines := strings.Split(content, "\n")
+
+	// Validate all changes against file bounds before applying any
+	for i, change := range processedChanges {
+		if change.startLine > len(lines) || change.endLine > len(lines) {
+			return map[string]any{"error": fmt.Sprintf("LINE NUMBER OUT OF BOUNDS in change %d: file has %d lines, but change references line %d", i, len(lines), max(change.startLine, change.endLine))}
+		}
+
+		// Check column bounds for start position
+		if change.startLine <= len(lines) {
+			lineIdx := change.startLine - 1
+			lineLen := utf8.RuneCountInString(lines[lineIdx])
+			if change.startCol > lineLen {
+				return map[string]any{"error": fmt.Sprintf("START COLUMN OUT OF BOUNDS in change %d: line %d has %d characters, but change references column %d", i, change.startLine, lineLen, change.startCol)}
+			}
+		}
+
+		// Check column bounds for end position (for same line operations)
+		if change.startLine == change.endLine && change.endLine <= len(lines) {
+			lineIdx := change.endLine - 1
+			lineLen := utf8.RuneCountInString(lines[lineIdx])
+			if change.endCol > lineLen {
+				return map[string]any{"error": fmt.Sprintf("END COLUMN OUT OF BOUNDS in change %d: line %d has %d characters, but change references column %d", i, change.endLine, lineLen, change.endCol)}
+			}
+		}
+	}
+
+	// Sort changes by position (last to first to avoid position conflicts)
 	sort.Slice(processedChanges, func(i, j int) bool {
 		if processedChanges[i].startLine == processedChanges[j].startLine {
 			return processedChanges[i].startCol > processedChanges[j].startCol
@@ -999,62 +1066,134 @@ func EditFile(args map[string]any) map[string]any {
 		return processedChanges[i].startLine > processedChanges[j].startLine
 	})
 
-	// Read entire file into memory first
-	fileContent, err := os.ReadFile(filepathInput)
-	if err != nil {
-		return map[string]any{"error": "CANNOT READ INPUT FILE: " + err.Error()}
-	}
-
-	lines := strings.Split(string(fileContent), "\n")
-
-	// Apply changes from last to first (to maintain line numbers)
+	// Apply changes from last to first
 	for _, change := range processedChanges {
 		switch change.operation {
 		case "delete":
-			if change.startLine > 0 && change.endLine <= len(lines) {
-				// Delete lines (1-indexed to 0-indexed)
-				start := change.startLine - 1
-				end := change.endLine
-				if end > len(lines) {
-					end = len(lines)
-				}
-				lines = append(lines[:start], lines[end:]...)
-			}
-
+			lines = applyDelete(lines, change)
 		case "replace":
-			if change.startLine > 0 && change.startLine <= len(lines) {
-				lineIdx := change.startLine - 1
-				if lineIdx < len(lines) {
-					line := lines[lineIdx]
-					if change.startCol <= len(line) && change.endCol <= len(line) {
-						newLine := line[:change.startCol] + change.content + line[change.endCol:]
-						lines[lineIdx] = newLine
-					}
-				}
-			}
-
+			lines = applyReplace(lines, change)
 		case "write":
-			if change.startLine > 0 && change.startLine <= len(lines) {
-				lineIdx := change.startLine - 1
-				if lineIdx < len(lines) {
-					line := lines[lineIdx]
-					if change.startCol <= len(line) {
-						newLine := line[:change.startCol] + change.content + line[change.startCol:]
-						lines[lineIdx] = newLine
-					}
-				}
-			}
+			lines = applyWrite(lines, change)
 		}
 	}
 
-	// Write back to original file
+	// Write back to file
 	newContent := strings.Join(lines, "\n")
 	err = os.WriteFile(filepathInput, []byte(newContent), 0644)
 	if err != nil {
-		return map[string]any{"error": "CANNOT WRITE TO FILE: " + err.Error()}
+		return map[string]any{"error": fmt.Sprintf("CANNOT WRITE TO FILE: %s - %v", filepathInput, err)}
 	}
 
-	return map[string]any{"output": "Successfully written the content you provided"}
+	return map[string]any{"output": fmt.Sprintf("Successfully applied %d changes to %s", len(processedChanges), filepathInput)}
+}
+
+// Helper function for delete operations
+func applyDelete(lines []string, change changeInfo) []string {
+	startIdx := change.startLine - 1
+	endIdx := change.endLine - 1
+
+	if change.startLine == change.endLine {
+		// Single line deletion - remove characters within the line
+		if startIdx < len(lines) {
+			line := lines[startIdx]
+			runes := []rune(line)
+			if change.startCol <= len(runes) && change.endCol <= len(runes) {
+				newRunes := append(runes[:change.startCol], runes[change.endCol:]...)
+				lines[startIdx] = string(newRunes)
+			}
+		}
+	} else {
+		// Multi-line deletion
+		if startIdx < len(lines) && endIdx < len(lines) {
+			// Keep part of first line before start column
+			firstLinePart := ""
+			if startIdx < len(lines) {
+				firstLineRunes := []rune(lines[startIdx])
+				if change.startCol <= len(firstLineRunes) {
+					firstLinePart = string(firstLineRunes[:change.startCol])
+				}
+			}
+
+			// Keep part of last line after end column
+			lastLinePart := ""
+			if endIdx < len(lines) {
+				lastLineRunes := []rune(lines[endIdx])
+				if change.endCol <= len(lastLineRunes) {
+					lastLinePart = string(lastLineRunes[change.endCol:])
+				}
+			}
+
+			// Combine remaining parts
+			combinedLine := firstLinePart + lastLinePart
+
+			// Remove the range and insert combined line
+			newLines := make([]string, 0, len(lines)-(endIdx-startIdx))
+			newLines = append(newLines, lines[:startIdx]...)
+			newLines = append(newLines, combinedLine)
+			newLines = append(newLines, lines[endIdx+1:]...)
+			lines = newLines
+		}
+	}
+	return lines
+}
+
+// Helper function for replace operations
+func applyReplace(lines []string, change changeInfo) []string {
+	// First delete the range, then insert new content
+	lines = applyDelete(lines, change)
+
+	// Now insert the new content at the start position
+	writeChange := changeInfo{
+		startLine: change.startLine,
+		startCol:  change.startCol,
+		endLine:   change.startLine,
+		endCol:    change.startCol,
+		operation: "write",
+		content:   change.content,
+	}
+	return applyWrite(lines, writeChange)
+}
+
+// Helper function for write operations
+func applyWrite(lines []string, change changeInfo) []string {
+	if change.startLine-1 < len(lines) {
+		lineIdx := change.startLine - 1
+		line := lines[lineIdx]
+		runes := []rune(line)
+
+		if change.startCol <= len(runes) {
+			// Handle multi-line content insertion
+			newContent := change.content
+			contentLines := strings.Split(newContent, "\n")
+
+			if len(contentLines) == 1 {
+				// Single line insertion
+				newRunes := append(runes[:change.startCol], append([]rune(contentLines[0]), runes[change.startCol:]...)...)
+				lines[lineIdx] = string(newRunes)
+			} else {
+				// Multi-line insertion
+				beforeRunes := runes[:change.startCol]
+				afterRunes := runes[change.startCol:]
+
+				// First line: existing content before + first new line
+				firstNewLine := string(beforeRunes) + contentLines[0]
+
+				// Last line: last new content + existing content after
+				lastNewLine := contentLines[len(contentLines)-1] + string(afterRunes)
+
+				// Build new lines array
+				newLines := make([]string, 0, len(lines)+len(contentLines)-1)
+				newLines = append(newLines, lines[:lineIdx]...)
+				newLines = append(newLines, firstNewLine)
+				newLines = append(newLines, contentLines[1:len(contentLines)-1]...)
+				newLines = append(newLines, lastNewLine)
+				newLines = append(newLines, lines[lineIdx+1:]...)
+				lines = newLines
+			}
+		}
+	}
+	return lines
 }
 
 // GetProjectStructure returns the project structure as a string, ignoring files and directories specified in .gitignore.
@@ -1074,7 +1213,7 @@ func GetProjectStructure(args map[string]any) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err, "output": nil}
 	}
-	 
+
 	if builder.String() == "." || builder.String() == "" {
 		return map[string]any{"error": nil, "output": "<empty directory>"}
 	}

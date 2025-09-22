@@ -7,6 +7,7 @@ import (
 	"dost/internal/repository"
 	"dost/internal/service"
 	"dost/internal/service/analysis"
+
 	"dost/internal/service/coder"
 	"dost/internal/service/planner"
 	"encoding/json"
@@ -32,6 +33,7 @@ type TaskStatus string
 var OrchestratortoolsFunc map[string]repository.Function = make(map[string]repository.Function)
 
 var TaskMap = make(map[string]Task)
+
 var ChatHistory = make([]map[string]any, 0)
 
 const (
@@ -1004,7 +1006,7 @@ func (p *AgentOrchestrator) RequestAgent(contents []map[string]any) map[string]a
 				}
 				if len(parts) > 0 {
 					ChatHistory = append(ChatHistory, map[string]any{
-						"role":  response.Candidates[0].Content.Role,
+						"role":  "orchestrator",
 						"parts": parts,
 					})
 				}

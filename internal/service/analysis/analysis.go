@@ -38,6 +38,7 @@ var AnalysisMap = make(map[string]Analysis, 0)
 var AnalysistoolsFunc map[string]repository.Function = make(map[string]repository.Function)
 var InputData = make(map[string]any, 0)
 var FilesRead = make(map[string]any, 0)
+
 var ChatHistory = make([]map[string]any, 0)
 
 type Analysis struct {
@@ -529,7 +530,7 @@ func (p *AgentAnalysis) RequestAgent(contents []map[string]any) map[string]any {
 
 				if len(parts) > 0 {
 					ChatHistory = append(ChatHistory, map[string]any{
-						"role":  response.Candidates[0].Content.Role,
+						"role":  "analysis",
 						"parts": parts,
 					})
 				}
@@ -619,7 +620,7 @@ func GetProjectStructure(args map[string]any) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err, "output": nil}
 	}
-	 
+
 	if builder.String() == "." || builder.String() == "" {
 		return map[string]any{"error": nil, "output": "<empty directory>"}
 	}

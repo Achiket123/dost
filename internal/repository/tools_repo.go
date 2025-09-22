@@ -31,10 +31,7 @@ type Response struct {
 		} `json:"content"`
 	} `json:"candidates"`
 }
-type ToolFunction interface {
-	Run(args map[string]any) string
-	ToObject() map[string]any
-}
+
 type Return map[string]any
 type Properties struct {
 	Type        string                 `json:"type"`

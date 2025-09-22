@@ -12,6 +12,7 @@ const (
 	AgentCoder        AgentType = "coder"
 	AgentOrchestrator AgentType = "orchestrator"
 	AgentAnalysis     AgentType = "analysis"
+	AgentEnhancer     AgentType = "enhancer"
 )
 
 // MessageRole represents the role in conversation

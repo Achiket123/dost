@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"dost/internal/repository"
@@ -22,10 +23,10 @@ import (
 	"github.com/spf13/viper"
 )
 
-var ChatHistory = make([]map[string]any, 0)
 var ignoreMatcher *gitignore.GitIgnore
 var PlannertoolsFunc map[string]repository.Function = make(map[string]repository.Function)
 
+var ChatHistory = make([]map[string]any, 0)
 var defaultIgnore = map[string]bool{
 	".git":         true,
 	"node_modules": true,
@@ -39,10 +40,27 @@ var defaultIgnore = map[string]bool{
 }
 
 type Plans struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Actions     []string `json:"actions"`
+	PlanID          string   `json:"planId"`
+	Title           string   `json:"title"`
+	Objective       string   `json:"objective"`
+	Assumptions     []string `json:"assumptions"`
+	Steps           []Step   `json:"steps"`
+	SuccessCriteria []string `json:"successCriteria"`
+	Fallbacks       []string `json:"fallbacks"`
 }
+
+// Step represents an individual step in the plan.
+type Step struct {
+	ID           int      `json:"id"`
+	Description  string   `json:"description"`
+	Agent        string   `json:"agent"`
+	Inputs       []string `json:"inputs"`
+	Outputs      []string `json:"outputs"`
+	Dependencies []int    `json:"dependencies"`
+}
+
+// Global storage for plans
+var PlansMap = make(map[string]Plans, 0)
 
 type AgentPlanner repository.Agent
 
@@ -364,7 +382,8 @@ func (p *AgentPlanner) Interaction(args map[string]any) map[string]any {
 					result := function.Run(argsData)
 					fmt.Println(result)
 					if _, ok = result["exit"].(bool); ok {
-						return nil
+
+						return map[string]any{}
 					}
 					// Add function response to chat history
 					ChatHistory = append(ChatHistory, map[string]any{
@@ -507,7 +526,7 @@ func (c *AgentPlanner) RequestAgent(contents []map[string]any) map[string]any {
 				}
 				if len(parts) > 0 {
 					ChatHistory = append(ChatHistory, map[string]any{
-						"role":  response.Candidates[0].Content.Role,
+						"role":  "planner",
 						"parts": parts,
 					})
 				}
@@ -600,60 +619,6 @@ func (p *AgentPlanner) NewAgent() {
 	}
 }
 
-func Plan(args map[string]any) map[string]any {
-
-	rawNames, _ := args["names"].([]interface{})
-	var names []string
-	for _, v := range rawNames {
-		if s, ok := v.(string); ok {
-			names = append(names, s)
-		}
-	}
-
-	// Convert descriptions
-	rawDescriptions, _ := args["descriptions"].([]interface{})
-	var descriptions []string
-	for _, v := range rawDescriptions {
-		if s, ok := v.(string); ok {
-			descriptions = append(descriptions, s)
-		}
-	}
-
-	// Convert actions ([][]string)
-	rawActions, _ := args["actions"].([]interface{})
-	var actions [][]string
-	for _, rawGroup := range rawActions {
-		if group, ok := rawGroup.([]interface{}); ok {
-			var steps []string
-			for _, v := range group {
-				if s, ok := v.(string); ok {
-					steps = append(steps, s)
-				}
-			}
-			actions = append(actions, steps)
-		}
-	}
-
-	// Build plans
-	var plans []Plans
-	for j := range names {
-		var plan = Plans{
-			Name:        names[j],
-			Description: descriptions[j],
-			Actions:     actions[j],
-		}
-		plans = append(plans, plan)
-	}
-
-	data, err := json.Marshal(plans)
-	if err != nil {
-		return map[string]any{
-			"error": "Unable To Marshal",
-		}
-	}
-	return map[string]any{"output": string(data)}
-}
-
 func GetPlannerArrayMap() []map[string]any {
 	arrayOfMap := make([]map[string]any, 0)
 	for _, v := range PlannerCapabilities {
@@ -676,14 +641,200 @@ func GenerateTasklist(args map[string]any) map[string]any {
 // Key changes to make planner agent return output like coder agent:
 
 // 1. Add an exit-process function to PlannerCapabilities
+
+// Enhanced validation and error handling
+func PutPlanForAgent(args map[string]any) map[string]any {
+	// Check if args is empty or nil
+	if args == nil || len(args) == 0 {
+		return map[string]any{
+			"success": false,
+			"error":   "no parameters provided - plan object is required",
+			"hint":    "Expected format: {\"plan\": {\"title\": \"...\", \"objective\": \"...\", \"steps\": [...]}}",
+		}
+	}
+
+	// Extract plan data from args
+	planData, ok := args["plan"]
+	if !ok {
+		// Try to handle case where the entire args might be the plan
+		if _, hasTitle := args["title"]; hasTitle {
+			planData = args
+		} else {
+			return map[string]any{
+				"success":  false,
+				"error":    "missing 'plan' parameter",
+				"hint":     "Wrap your plan data in a 'plan' key",
+				"received": fmt.Sprintf("Keys found: %v", getKeys(args)),
+			}
+		}
+	}
+
+	// Convert to JSON and back to Plans struct
+	planJSON, err := json.Marshal(planData)
+	if err != nil {
+		return map[string]any{
+			"success": false,
+			"error":   "failed to marshal plan data: " + err.Error(),
+			"data":    fmt.Sprintf("%+v", planData),
+		}
+	}
+
+	var plan Plans
+	if err := json.Unmarshal(planJSON, &plan); err != nil {
+		return map[string]any{
+			"success": false,
+			"error":   "failed to unmarshal plan data: " + err.Error(),
+			"json":    string(planJSON),
+		}
+	}
+
+	// Generate unique plan ID if not provided
+	if plan.PlanID == "" {
+		plan.PlanID = fmt.Sprintf("plan_%d", time.Now().Unix())
+	}
+
+	// Enhanced validation with detailed error messages
+	if plan.Title == "" {
+		return map[string]any{
+			"success":  false,
+			"error":    "plan title is required",
+			"hint":     "Add a descriptive title for your plan",
+			"example":  "\"title\": \"User Authentication System Setup\"",
+			"received": fmt.Sprintf("Plan data: %+v", plan),
+		}
+	}
+
+	if plan.Objective == "" {
+		return map[string]any{
+			"success": false,
+			"error":   "plan objective is required",
+			"hint":    "Define what this plan aims to achieve",
+			"example": "\"objective\": \"Implement secure user login functionality\"",
+		}
+	}
+
+	if len(plan.Steps) == 0 {
+		return map[string]any{
+			"success": false,
+			"error":   "plan must contain at least one step",
+			"hint":    "Add steps that describe how to achieve the objective",
+			"example": "[{\"id\": 1, \"description\": \"Setup database\", \"agent\": \"DatabaseAgent\"}]",
+		}
+	}
+
+	// Validate steps with auto-fixing capabilities
+	for i, step := range plan.Steps {
+		if step.Description == "" {
+			return map[string]any{
+				"success": false,
+				"error":   fmt.Sprintf("step %d is missing description", i+1),
+				"hint":    "Each step needs a clear description of what should be done",
+				"step":    fmt.Sprintf("%+v", step),
+			}
+		}
+		if step.Agent == "" {
+			// Try to assign a default agent if possible
+			plan.Steps[i].Agent = "GeneralAgent"
+		}
+		// Auto-assign ID if missing
+		if step.ID == 0 {
+			plan.Steps[i].ID = i + 1
+		}
+	}
+
+	// Store the plan
+	PlansMap[plan.PlanID] = plan
+
+	// Return successful response with the complete plan
+	marshalData, err := json.Marshal(plan)
+	if err != nil {
+		return map[string]any{
+			"success": false,
+			"error":   "failed to serialize final plan: " + err.Error(),
+		}
+	}
+
+	return map[string]any{
+		"success": true,
+		"planId":  plan.PlanID,
+		"output":  string(marshalData),
+		"message": "Plan created successfully",
+	}
+}
+func getKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func ExitProcess(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok && text != "" {
 		fmt.Println(text)
 	}
+	marshabData, err := json.Marshal(PlansMap)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
 
-	fmt.Println("--- Planning completed successfully! Exiting...")
-	return map[string]any{"error": nil, "output": "Planning Completed Successfully", "exit": true}
+	return map[string]any{"error": nil, "output": string(marshabData), "exit": true}
+}
+
+func TakeInputFromTerminal(args map[string]any) map[string]any {
+	text, ok := args["text"].(string)
+	if !ok {
+		return map[string]any{"error": "No Text Provided"}
+	}
+	fmt.Println(text)
+
+	requirements, ok := args["requirements"].([]any)
+	reader := bufio.NewReader(os.Stdin)
+
+	// Case 1: No requirements -> just take a single input
+	if !ok || len(requirements) == 0 {
+		fmt.Print("dost> ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return map[string]any{
+				"error":  fmt.Sprintf("Error reading input: %v", err),
+				"output": nil,
+			}
+		}
+		input = strings.TrimSpace(input)
+		if input == "" {
+			return map[string]any{"error": nil, "output": "<no input provided>"}
+		}
+		return map[string]any{"error": nil, "output": input}
+	}
+
+	// Case 2: Requirements exist -> ask each question
+	results := make(map[string]string)
+	for _, req := range requirements {
+		question, ok := req.(string)
+		if !ok {
+			continue
+		}
+
+		fmt.Printf("dost> %s: ", question)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return map[string]any{
+				"error":  fmt.Sprintf("Error reading input: %v", err),
+				"output": nil,
+			}
+		}
+
+		input = strings.TrimSpace(input)
+		if input == "" {
+			results[question] = "<no input provided>"
+		} else {
+			results[question] = input
+		}
+	}
+
+	return map[string]any{"error": nil, "output": results}
 }
 
 // 3. Add exit-process to PlannerCapabilities array
@@ -716,60 +867,90 @@ Critical Exit Criteria:
 			"output": "string // Final completion report and recommendations",
 		},
 	},
+
 	{
 		Name: "create-plan",
-		Description: `Creates a structured plan consisting of multiple tasks or goals. 
-Each plan contains:
-- A name (to identify the plan clearly).
-- A description (to explain the overall goal or purpose).
-- A list of ordered actions/steps that should be executed to achieve the plan.
+		Description: `Creates a structured execution plan with proper validation and error handling.
+	
+REQUIRED FIELDS:
+- title: Descriptive name for the plan
+- objective: Clear statement of what the plan achieves  
+- steps: Array of at least one step, each with:
+  - id: Unique step identifier (auto-assigned if missing)
+  - description: What this step does
+  - agent: Which agent executes this step (defaults to "GeneralAgent")
 
-This is useful for breaking down complex queries into structured, executable workflows.`,
+OPTIONAL FIELDS:
+- planId: Unique identifier (auto-generated if missing)
+- assumptions: List of prerequisites
+- successCriteria: How to measure success
+- fallbacks: What to do if steps fail
+
+EXAMPLE USAGE:
+{
+  "plan": {
+    "title": "User Registration System",
+    "objective": "Implement secure user signup process",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Create user database schema",
+        "agent": "DatabaseAgent"
+      },
+      {
+        "id": 2, 
+        "description": "Build registration API endpoint",
+        "agent": "BackendAgent",
+        "dependencies": [1]
+      }
+    ]
+  }
+}`,
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
-				"names": {
-					Type: repository.TypeArray,
-					Description: `An array of plan names.
-Each string should represent a concise, human-readable title for the plan (e.g., "Setup Git Repository", "Deploy Web Application").
-The index of each name corresponds directly to the matching description and actions.`,
-					Items: &repository.Properties{
-						Type:        repository.TypeString,
-						Description: "A single plan name/title.",
-					},
-				},
-				"descriptions": {
-					Type: repository.TypeArray,
-					Description: `An array of descriptions, one for each plan.
-Each description should clearly explain the overall purpose, context, or expected outcome of the plan (e.g., "Initialize a Git repository, commit initial files, and push to remote").`,
-					Items: &repository.Properties{
-						Type:        repository.TypeString,
-						Description: "Detailed explanation for a single plan.",
-					},
-				},
-				"actions": {
-					Type: repository.TypeArray,
-					Description: `An array of actions for each plan. 
-Each element in this array corresponds to a specific plan and contains an ordered list of step-by-step instructions.
-Example:
-[
-  ["Install dependencies", "Initialize Git repo", "Commit changes", "Push to remote"],
-  ["Build Docker image", "Push image to registry", "Deploy to Kubernetes"]
-]`,
-					Items: &repository.Properties{
-						Type: repository.TypeArray,
-						Description: `List of ordered steps (strings) for one plan. 
-Each step should be a clear, executable instruction.`,
-						Items: &repository.Properties{
+				"plan": {
+					Type:        repository.TypeObject,
+					Description: "Complete plan definition with all required fields",
+					Properties: map[string]*repository.Properties{
+						"planId": {
 							Type:        repository.TypeString,
-							Description: "A single step/instruction inside a plan.",
+							Description: "Unique plan identifier (auto-generated if not provided)",
 						},
+						"title": {
+							Type:        repository.TypeString,
+							Description: "REQUIRED: Descriptive title for the plan",
+						},
+						"objective": {
+							Type:        repository.TypeString,
+							Description: "REQUIRED: Clear objective statement",
+						},
+						"steps": {
+							Type:        repository.TypeArray,
+							Description: "REQUIRED: At least one execution step",
+							Items: &repository.Properties{
+								Type: repository.TypeObject,
+								Properties: map[string]*repository.Properties{
+									"id":           {Type: repository.TypeInteger, Description: "Step number (auto-assigned if missing)"},
+									"description":  {Type: repository.TypeString, Description: "REQUIRED: What this step does"},
+									"agent":        {Type: repository.TypeString, Description: "Which agent executes (defaults to GeneralAgent)"},
+									"inputs":       {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
+									"outputs":      {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
+									"dependencies": {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeInteger}},
+								},
+								Required: []string{"description"},
+							},
+						},
+						"assumptions":     {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
+						"successCriteria": {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
+						"fallbacks":       {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
 					},
+					Required: []string{"title", "objective", "steps"},
 				},
 			},
-			Required: []string{"names", "descriptions", "actions"},
+			Required: []string{"plan"},
 		},
-		Service: Plan,
+		Service: PutPlanForAgent,
 	},
 }
 
