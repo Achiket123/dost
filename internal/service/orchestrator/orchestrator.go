@@ -7,6 +7,7 @@ import (
 	"dost/internal/repository"
 	"dost/internal/service"
 	"dost/internal/service/analysis"
+	"dost/internal/service/interactor"
 
 	"dost/internal/service/coder"
 	"dost/internal/service/planner"
@@ -421,7 +422,7 @@ func AskAnAgent(args map[string]any) map[string]any {
 		anaAgent := analysis.AgentAnalysis{}
 		anaAgent.NewAgent()
 		query := map[string]any{
-			"query": fmt.Sprintf("Here is the Task run an analysis for this task: \" %s\", Don't assume anything ask the user for any clearence you want. Don't hallucinate!", task),
+			"query": fmt.Sprintf("Here is the Task run an analysis for this task: \" %s\", ", task),
 		}
 		fmt.Println(query["query"])
 		analysisOutPut := anaAgent.Interaction(query)["analysis-id"]
@@ -442,7 +443,7 @@ func AskAnAgent(args map[string]any) map[string]any {
 		planAgent := planner.AgentPlanner{}
 		planAgent.NewAgent()
 		planAgent.Interaction(map[string]any{
-			"query": fmt.Sprintf("Here is the Task do a detail planning for this task: \" %s\", Don't assume anything ask the user for any clearence you want. Don't hallucinate!", task),
+			"query": fmt.Sprintf("Here is the Task do a detail planning for this task: \" %s\", ", task),
 		})
 	case "coder":
 		// Enhanced version with proper analysis checking and query enhancement
@@ -541,7 +542,14 @@ INSTRUCTIONS
 		result = map[string]any{
 			"coder": coderid,
 		}
-
+	case "interactor":
+		interAgent := interactor.AgentInteractor{}
+		interAgent.NewAgent()
+		query := map[string]any{"query": " Here is the Task do the task: \" " + task + "\",. Make sure to use the analysis-id and coder-id if provided in args."}
+		interactorid := interAgent.Interaction(query)["interactor-id"].(string)
+		result = map[string]any{
+			"interactor": interactorid,
+		}
 	default:
 		return map[string]any{
 			"error":  fmt.Sprintf("unknown agent: %s", agentID),
@@ -1700,7 +1708,7 @@ Available agents:
 				"agent_id": {
 					Type:        repository.TypeString,
 					Description: "The ID of the agent to route the task to (analysis, planning, execution)",
-					Enum:        []string{"analysis", "coder", "planner"},
+					Enum:        []string{"analysis", "coder", "planner", "interactor"},
 				},
 				"task": {
 					Type:        repository.TypeString,

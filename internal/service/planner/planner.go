@@ -644,47 +644,109 @@ func GenerateTasklist(args map[string]any) map[string]any {
 
 // Enhanced validation and error handling
 func PutPlanForAgent(args map[string]any) map[string]any {
+	log.Printf("DEBUG: Received args for PutPlanForAgent: %+v", args)
+
 	// Check if args is empty or nil
 	if args == nil || len(args) == 0 {
 		return map[string]any{
 			"success": false,
-			"error":   "no parameters provided - plan object is required",
-			"hint":    "Expected format: {\"plan\": {\"title\": \"...\", \"objective\": \"...\", \"steps\": [...]}}",
+			"error":   "No parameters provided. I need you to call gather-plan-requirements first to collect the necessary information.",
+			"action":  "call gather-plan-requirements function to collect plan details from user",
 		}
 	}
 
-	// Extract plan data from args
-	planData, ok := args["plan"]
-	if !ok {
-		// Try to handle case where the entire args might be the plan
-		if _, hasTitle := args["title"]; hasTitle {
-			planData = args
-		} else {
-			return map[string]any{
-				"success":  false,
-				"error":    "missing 'plan' parameter",
-				"hint":     "Wrap your plan data in a 'plan' key",
-				"received": fmt.Sprintf("Keys found: %v", getKeys(args)),
+	// Create Plans struct directly from args (no nested "plan" object)
+	var plan Plans
+
+	// Extract title
+	if title, ok := args["title"].(string); ok {
+		plan.Title = title
+	}
+
+	// Extract objective
+	if objective, ok := args["objective"].(string); ok {
+		plan.Objective = objective
+	}
+
+	// Extract planId (optional)
+	if planId, ok := args["planId"].(string); ok {
+		plan.PlanID = planId
+	}
+
+	// Extract steps
+	if stepsData, ok := args["steps"].([]any); ok {
+		for i, stepData := range stepsData {
+			if stepMap, ok := stepData.(map[string]any); ok {
+				step := Step{
+					ID: i + 1, // Auto-assign ID
+				}
+
+				if desc, ok := stepMap["description"].(string); ok {
+					step.Description = desc
+				}
+
+				if agent, ok := stepMap["agent"].(string); ok {
+					step.Agent = agent
+				} else {
+					step.Agent = "GeneralAgent" // Default agent
+				}
+
+				// Handle inputs array
+				if inputs, ok := stepMap["inputs"].([]any); ok {
+					for _, input := range inputs {
+						if inputStr, ok := input.(string); ok {
+							step.Inputs = append(step.Inputs, inputStr)
+						}
+					}
+				}
+
+				// Handle outputs array
+				if outputs, ok := stepMap["outputs"].([]any); ok {
+					for _, output := range outputs {
+						if outputStr, ok := output.(string); ok {
+							step.Outputs = append(step.Outputs, outputStr)
+						}
+					}
+				}
+
+				// Handle dependencies array
+				if deps, ok := stepMap["dependencies"].([]any); ok {
+					for _, dep := range deps {
+						if depInt, ok := dep.(float64); ok {
+							step.Dependencies = append(step.Dependencies, int(depInt))
+						}
+					}
+				}
+
+				plan.Steps = append(plan.Steps, step)
 			}
 		}
 	}
 
-	// Convert to JSON and back to Plans struct
-	planJSON, err := json.Marshal(planData)
-	if err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   "failed to marshal plan data: " + err.Error(),
-			"data":    fmt.Sprintf("%+v", planData),
+	// Extract assumptions (optional)
+	if assumptions, ok := args["assumptions"].([]any); ok {
+		for _, assumption := range assumptions {
+			if assumptionStr, ok := assumption.(string); ok {
+				plan.Assumptions = append(plan.Assumptions, assumptionStr)
+			}
 		}
 	}
 
-	var plan Plans
-	if err := json.Unmarshal(planJSON, &plan); err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   "failed to unmarshal plan data: " + err.Error(),
-			"json":    string(planJSON),
+	// Extract successCriteria (optional)
+	if criteria, ok := args["successCriteria"].([]any); ok {
+		for _, criterion := range criteria {
+			if criterionStr, ok := criterion.(string); ok {
+				plan.SuccessCriteria = append(plan.SuccessCriteria, criterionStr)
+			}
+		}
+	}
+
+	// Extract fallbacks (optional)
+	if fallbacks, ok := args["fallbacks"].([]any); ok {
+		for _, fallback := range fallbacks {
+			if fallbackStr, ok := fallback.(string); ok {
+				plan.Fallbacks = append(plan.Fallbacks, fallbackStr)
+			}
 		}
 	}
 
@@ -693,49 +755,64 @@ func PutPlanForAgent(args map[string]any) map[string]any {
 		plan.PlanID = fmt.Sprintf("plan_%d", time.Now().Unix())
 	}
 
-	// Enhanced validation with detailed error messages
+	// Enhanced validation with specific guidance
+	validationErrors := []string{}
+
 	if plan.Title == "" {
-		return map[string]any{
-			"success":  false,
-			"error":    "plan title is required",
-			"hint":     "Add a descriptive title for your plan",
-			"example":  "\"title\": \"User Authentication System Setup\"",
-			"received": fmt.Sprintf("Plan data: %+v", plan),
-		}
+		validationErrors = append(validationErrors, "Missing required field: 'title'")
 	}
 
 	if plan.Objective == "" {
-		return map[string]any{
-			"success": false,
-			"error":   "plan objective is required",
-			"hint":    "Define what this plan aims to achieve",
-			"example": "\"objective\": \"Implement secure user login functionality\"",
-		}
+		validationErrors = append(validationErrors, "Missing required field: 'objective'")
 	}
 
 	if len(plan.Steps) == 0 {
+		validationErrors = append(validationErrors, "Missing required field: 'steps' (must have at least one step)")
+	}
+
+	if len(validationErrors) > 0 {
 		return map[string]any{
 			"success": false,
-			"error":   "plan must contain at least one step",
-			"hint":    "Add steps that describe how to achieve the objective",
-			"example": "[{\"id\": 1, \"description\": \"Setup database\", \"agent\": \"DatabaseAgent\"}]",
+			"error":   "Plan validation failed: " + strings.Join(validationErrors, ", "),
+			"requirements": []string{
+				"title: A descriptive name for your plan",
+				"objective: A clear statement of what this plan achieves",
+				"steps: An array of at least one step with 'description' field",
+			},
+			"example": `{
+  "plan": {
+    "title": "Setup Development Environment",
+    "objective": "Configure a complete development environment for the project",
+    "steps": [
+      {
+        "description": "Install required dependencies",
+        "agent": "SystemAgent"
+      },
+      {
+        "description": "Configure database connection", 
+        "agent": "DatabaseAgent"
+      }
+    ]
+  }
+}`,
 		}
 	}
 
-	// Validate steps with auto-fixing capabilities
+	// Validate and fix steps
 	for i, step := range plan.Steps {
 		if step.Description == "" {
 			return map[string]any{
 				"success": false,
-				"error":   fmt.Sprintf("step %d is missing description", i+1),
-				"hint":    "Each step needs a clear description of what should be done",
-				"step":    fmt.Sprintf("%+v", step),
+				"error":   fmt.Sprintf("Step %d is missing required 'description' field", i+1),
+				"hint":    "Each step must have a clear description of what should be done",
 			}
 		}
+
+		// Auto-assign agent if missing
 		if step.Agent == "" {
-			// Try to assign a default agent if possible
 			plan.Steps[i].Agent = "GeneralAgent"
 		}
+
 		// Auto-assign ID if missing
 		if step.ID == 0 {
 			plan.Steps[i].ID = i + 1
@@ -745,20 +822,12 @@ func PutPlanForAgent(args map[string]any) map[string]any {
 	// Store the plan
 	PlansMap[plan.PlanID] = plan
 
-	// Return successful response with the complete plan
-	marshalData, err := json.Marshal(plan)
-	if err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   "failed to serialize final plan: " + err.Error(),
-		}
-	}
-
+	// Return successful response
 	return map[string]any{
 		"success": true,
 		"planId":  plan.PlanID,
-		"output":  string(marshalData),
-		"message": "Plan created successfully",
+		"message": fmt.Sprintf("Plan '%s' created successfully with %d steps", plan.Title, len(plan.Steps)),
+		"plan":    plan,
 	}
 }
 func getKeys(m map[string]any) []string {
@@ -870,87 +939,94 @@ Critical Exit Criteria:
 
 	{
 		Name: "create-plan",
-		Description: `Creates a structured execution plan with proper validation and error handling.
-	
+		Description: `Creates a structured execution plan. Provide plan fields directly (not nested under 'plan' key).
+
 REQUIRED FIELDS:
-- title: Descriptive name for the plan
-- objective: Clear statement of what the plan achieves  
+- title: Descriptive name for the plan  
+- objective: Clear statement of what the plan achieves
 - steps: Array of at least one step, each with:
-  - id: Unique step identifier (auto-assigned if missing)
-  - description: What this step does
-  - agent: Which agent executes this step (defaults to "GeneralAgent")
+  - description: What this step does (REQUIRED)
+  - agent: Which agent executes this step (optional, defaults to "GeneralAgent")
 
 OPTIONAL FIELDS:
 - planId: Unique identifier (auto-generated if missing)
-- assumptions: List of prerequisites
+- assumptions: List of prerequisites  
 - successCriteria: How to measure success
 - fallbacks: What to do if steps fail
 
 EXAMPLE USAGE:
 {
-  "plan": {
-    "title": "User Registration System",
-    "objective": "Implement secure user signup process",
-    "steps": [
-      {
-        "id": 1,
-        "description": "Create user database schema",
-        "agent": "DatabaseAgent"
-      },
-      {
-        "id": 2, 
-        "description": "Build registration API endpoint",
-        "agent": "BackendAgent",
-        "dependencies": [1]
-      }
-    ]
-  }
+  "title": "User Registration System",
+  "objective": "Implement secure user signup process", 
+  "steps": [
+    {
+      "description": "Create user database schema",
+      "agent": "DatabaseAgent"
+    },
+    {
+      "description": "Build registration API endpoint", 
+      "agent": "BackendAgent"
+    }
+  ]
 }`,
 		Parameters: repository.Parameters{
 			Type: repository.TypeObject,
 			Properties: map[string]*repository.Properties{
-				"plan": {
-					Type:        repository.TypeObject,
-					Description: "Complete plan definition with all required fields",
-					Properties: map[string]*repository.Properties{
-						"planId": {
-							Type:        repository.TypeString,
-							Description: "Unique plan identifier (auto-generated if not provided)",
-						},
-						"title": {
-							Type:        repository.TypeString,
-							Description: "REQUIRED: Descriptive title for the plan",
-						},
-						"objective": {
-							Type:        repository.TypeString,
-							Description: "REQUIRED: Clear objective statement",
-						},
-						"steps": {
-							Type:        repository.TypeArray,
-							Description: "REQUIRED: At least one execution step",
-							Items: &repository.Properties{
-								Type: repository.TypeObject,
-								Properties: map[string]*repository.Properties{
-									"id":           {Type: repository.TypeInteger, Description: "Step number (auto-assigned if missing)"},
-									"description":  {Type: repository.TypeString, Description: "REQUIRED: What this step does"},
-									"agent":        {Type: repository.TypeString, Description: "Which agent executes (defaults to GeneralAgent)"},
-									"inputs":       {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
-									"outputs":      {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
-									"dependencies": {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeInteger}},
-								},
-								Required: []string{"description"},
-							},
-						},
-						"assumptions":     {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
-						"successCriteria": {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
-						"fallbacks":       {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
-					},
-					Required: []string{"title", "objective", "steps"},
+				"planId": {
+					Type:        repository.TypeString,
+					Description: "Unique plan identifier (auto-generated if not provided)",
 				},
+				"title": {
+					Type:        repository.TypeString,
+					Description: "REQUIRED: Descriptive title for the plan",
+				},
+				"objective": {
+					Type:        repository.TypeString,
+					Description: "REQUIRED: Clear objective statement",
+				},
+				"steps": {
+					Type:        repository.TypeArray,
+					Description: "REQUIRED: At least one execution step",
+					Items: &repository.Properties{
+						Type: repository.TypeObject,
+						Properties: map[string]*repository.Properties{
+							"id":           {Type: repository.TypeInteger, Description: "Step number (auto-assigned if missing)"},
+							"description":  {Type: repository.TypeString, Description: "REQUIRED: What this step does"},
+							"agent":        {Type: repository.TypeString, Description: "Which agent executes (defaults to GeneralAgent)"},
+							"inputs":       {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
+							"outputs":      {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
+							"dependencies": {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeInteger}},
+						},
+						Required: []string{"description"},
+					},
+				},
+				"assumptions":     {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
+				"successCriteria": {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
+				"fallbacks":       {Type: repository.TypeArray, Items: &repository.Properties{Type: repository.TypeString}},
 			},
-			Required: []string{"plan"},
+			Required: []string{"title", "objective", "steps"},
 		},
 		Service: PutPlanForAgent,
+	},
+	{
+		Name:        "take-input-from-terminal",
+		Description: `Collects input from the user via terminal interaction.`,
+		Parameters: repository.Parameters{
+			Type: repository.TypeObject,
+			Properties: map[string]*repository.Properties{
+				"text": {
+					Type:        repository.TypeString,
+					Description: "Prompt text to display to user",
+				},
+				"requirements": {
+					Type:        repository.TypeArray,
+					Description: "List of specific questions to ask (optional)",
+					Items:       &repository.Properties{Type: repository.TypeString},
+				},
+			},
+			Required: []string{"text", "requirements"},
+		},
+		Service: TakeInputFromTerminal,
 	},
 }
 

@@ -12,7 +12,7 @@ const (
 	AgentCoder        AgentType = "coder"
 	AgentOrchestrator AgentType = "orchestrator"
 	AgentAnalysis     AgentType = "analysis"
-	AgentEnhancer     AgentType = "enhancer"
+	AgentInteractor  AgentType = "interactor"
 )
 
 // MessageRole represents the role in conversation
@@ -39,7 +39,6 @@ type AgentMetadata struct {
 	Version      string    `json:"version"`
 	Type         AgentType `json:"type"`
 	Instructions string    `json:"instructions"`
-	// Capabilities   []Function        `json:"capabilities"`
 	Context        map[string]any    `json:"context"`
 	LastActive     time.Time         `json:"last_active"`
 	MaxConcurrency int               `json:"max_concurrency"`
