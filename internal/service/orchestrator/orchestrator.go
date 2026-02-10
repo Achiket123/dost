@@ -279,7 +279,7 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 				"role": "user",
 				"parts": []map[string]any{
 					{
-						"text": "If you feel there is no task left and nothing to do, call exit-process. Because only that can stop you and finish the program. Don't respond with text, no text output should be there, call the exit-process. PERIOD",
+						"text": "If there are no more tasks to do, you can either respond with a final text message directly, or call exit-process with the final text. For simple conversational responses, prefer responding with text directly. For task completions, call exit-process.",
 					},
 				},
 			})
@@ -304,6 +304,8 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 		}
 
 		// Process each output part
+		hasFunctionCall := false
+		hasTextOutput := false
 		for _, part := range outputData {
 			partType, hasType := part["type"].(string)
 			if !hasType {
@@ -312,11 +314,12 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 
 			switch partType {
 			case "text":
-				if text, ok := part["data"].(string); ok {
-					repository.StreamText(text)
-				}
+				// Text was already streamed in real-time by ParseSSEStream.
+				// Nothing to do here — it's already displayed.
+				hasTextOutput = true
 
 			case "functionCall":
+				hasFunctionCall = true
 				name, nameOK := part["name"].(string)
 				argsData, argsOK := part["args"].(map[string]any)
 				if !nameOK || !argsOK {
@@ -360,6 +363,12 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 					})
 				}
 			}
+		}
+
+		// If the model responded with only text (no function calls),
+		// treat it as the final response and exit the loop.
+		if hasTextOutput && !hasFunctionCall {
+			return nil
 		}
 
 		fmt.Println("---")
@@ -915,7 +924,7 @@ func (p *AgentOrchestrator) RequestAgent(contents []map[string]any) map[string]a
 		},
 		"toolConfig": map[string]any{
 			"functionCallingConfig": map[string]any{
-				"mode": "ANY",
+				"mode": "AUTO",
 			},
 		},
 		"contents": contents,
