@@ -60,7 +60,7 @@ Optimized for complex refactoring, code generation, and automated maintenance ta
 const RequestUserInputDescription = `Interactive terminal interface for real-time user communication and decision-making workflows. 
 Provides formatted input prompts with validation, timeout handling, and context-aware questioning. 
 Essential for gathering requirements, confirming destructive operations, and obtaining user preferences during development.`
- 
+
 var CodertoolsFunc map[string]repository.Function = make(map[string]repository.Function)
 var ignoreMatcher *gitignore.GitIgnore
 
@@ -393,7 +393,7 @@ func (c *AgentCoder) NewAgent() {
 	if model == "" {
 		model = "gemini-1.5-pro"
 	}
-	endPoints := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
+	endPoints := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse", model)
 	id := fmt.Sprintf("coder-%s", uuid.NewString())
 
 	agentMetadata := repository.AgentMetadata{
@@ -464,7 +464,7 @@ func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 		req.Header.Set("X-goog-api-key", viper.GetString("CODER.API_KEY"))
 
 		// Execute request with timeout
-		client := &http.Client{Timeout: c.Metadata.Timeout}
+		client := repository.NewStreamingHTTPClient()
 		resp, err := client.Do(req)
 		if err != nil {
 			if attempt == maxRetries {
@@ -475,6 +475,32 @@ func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 		}
 		defer resp.Body.Close()
 
+		// Success case - parse streaming response
+		if resp.StatusCode == http.StatusOK {
+			// Parse SSE stream with real-time display
+			streamResp, err := repository.ParseSSEStream(resp.Body, true)
+			if err != nil {
+				if attempt == maxRetries {
+					return map[string]any{"error": err.Error(), "output": nil}
+				}
+				time.Sleep(repository.ExponentialBackoff(attempt))
+				continue
+			}
+
+			// Convert to standard output format
+			output := repository.ConvertStreamResponseToOutput(streamResp)
+
+			// Save chat history
+			historyEntry := repository.BuildChatHistoryFromStream(streamResp, "coder")
+			if historyEntry != nil {
+				ChatHistory = append(ChatHistory, historyEntry)
+			}
+
+			c.Metadata.LastActive = time.Now()
+			return map[string]any{"error": nil, "output": output}
+		}
+
+		// Read body for error cases
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
 			if attempt == maxRetries {
@@ -482,62 +508,6 @@ func (c *AgentCoder) RequestAgent(contents []map[string]any) map[string]any {
 			}
 			time.Sleep(repository.ExponentialBackoff(attempt))
 			continue
-		}
-
-		// Handle success
-		if resp.StatusCode == http.StatusOK {
-			var response repository.Response
-			if err = json.Unmarshal(bodyBytes, &response); err != nil {
-				return map[string]any{"error": err.Error(), "output": nil}
-			}
-
-			output := []map[string]any{}
-			for _, cand := range response.Candidates {
-				for _, part := range cand.Content.Parts {
-					if part.Text != "" {
-						output = append(output, map[string]any{
-							"type": "text",
-							"data": part.Text,
-						})
-					}
-					if part.FunctionCall != nil {
-						output = append(output, map[string]any{
-							"type": "functionCall",
-							"name": part.FunctionCall.Name,
-							"args": part.FunctionCall.Args,
-						})
-					}
-				}
-			}
-
-			// Save to ChatHistory
-			if len(response.Candidates) > 0 && len(response.Candidates[0].Content.Parts) > 0 {
-				parts := []map[string]any{}
-				for _, part := range response.Candidates[0].Content.Parts {
-					if part.Text != "" {
-						parts = append(parts, map[string]any{
-							"text": part.Text,
-						})
-					}
-					if part.FunctionCall != nil {
-						parts = append(parts, map[string]any{
-							"functionCall": map[string]any{
-								"name": part.FunctionCall.Name,
-								"args": part.FunctionCall.Args,
-							},
-						})
-					}
-				}
-				if len(parts) > 0 {
-					ChatHistory = append(ChatHistory, map[string]any{
-						"role":  "coder",
-						"parts": parts,
-					})
-				}
-			}
-
-			c.Metadata.LastActive = time.Now()
-			return map[string]any{"error": nil, "output": output}
 		}
 
 		// Handle rate limits

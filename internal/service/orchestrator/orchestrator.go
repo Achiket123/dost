@@ -313,7 +313,7 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 			switch partType {
 			case "text":
 				if text, ok := part["data"].(string); ok {
-					fmt.Println("Agent:", text)
+					repository.StreamText(text)
 				}
 
 			case "functionCall":
@@ -371,7 +371,7 @@ func (p *AgentOrchestrator) NewAgent() {
 	if model == "" {
 		model = "gemini-1.5-pro"
 	}
-	endPoints := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
+	endPoints := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse", model)
 
 	analysisAgentMeta := repository.AgentMetadata{
 		ID:             "Orchestrator-agent-v1",
@@ -683,7 +683,7 @@ func TakeInputFromTerminal(args map[string]any) map[string]any {
 func ExitProcess(args map[string]any) map[string]any {
 	text, ok := args["text"].(string)
 	if ok && text != "" {
-		fmt.Println(text)
+		repository.StreamText(text)
 	}
 
 	fmt.Println("--- Task completed successfully! Exiting...")
@@ -949,8 +949,8 @@ func (p *AgentOrchestrator) RequestAgent(contents []map[string]any) map[string]a
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-goog-api-key", viper.GetString("ORCHESTRATOR.API_KEY"))
 
-		// Execute request
-		client := &http.Client{Timeout: p.Metadata.Timeout}
+		// Execute request with streaming-optimized client
+		client := repository.NewStreamingHTTPClient()
 		resp, err := client.Do(req)
 		if err != nil {
 			if attempt == maxRetries {
@@ -961,6 +961,32 @@ func (p *AgentOrchestrator) RequestAgent(contents []map[string]any) map[string]a
 		}
 		defer resp.Body.Close()
 
+		// Success case - parse streaming response
+		if resp.StatusCode == http.StatusOK {
+			// Parse SSE stream with real-time display
+			streamResp, err := repository.ParseSSEStream(resp.Body, true)
+			if err != nil {
+				if attempt == maxRetries {
+					return map[string]any{"error": err.Error(), "output": nil}
+				}
+				time.Sleep(repository.ExponentialBackoff(attempt))
+				continue
+			}
+
+			// Convert to standard output format
+			output := repository.ConvertStreamResponseToOutput(streamResp)
+
+			// Save chat history
+			historyEntry := repository.BuildChatHistoryFromStream(streamResp, "orchestrator")
+			if historyEntry != nil {
+				ChatHistory = append(ChatHistory, historyEntry)
+			}
+
+			p.Metadata.LastActive = time.Now()
+			return map[string]any{"error": nil, "output": output}
+		}
+
+		// Read body for error cases
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
 			if attempt == maxRetries {
@@ -968,60 +994,6 @@ func (p *AgentOrchestrator) RequestAgent(contents []map[string]any) map[string]a
 			}
 			time.Sleep(repository.ExponentialBackoff(attempt))
 			continue
-		}
-
-		// Success case
-		if resp.StatusCode == http.StatusOK {
-			var response repository.Response
-			if err = json.Unmarshal(bodyBytes, &response); err != nil {
-				return map[string]any{"error": err.Error(), "output": nil}
-			}
-
-			output := []map[string]any{}
-			for _, cand := range response.Candidates {
-				for _, part := range cand.Content.Parts {
-					if part.Text != "" {
-						output = append(output, map[string]any{
-							"type": "text",
-							"data": part.Text,
-						})
-					}
-					if part.FunctionCall != nil {
-						output = append(output, map[string]any{
-							"type": "functionCall",
-							"name": part.FunctionCall.Name,
-							"args": part.FunctionCall.Args,
-						})
-					}
-				}
-			}
-
-			// Save chat history
-			if len(response.Candidates) > 0 && len(response.Candidates[0].Content.Parts) > 0 {
-				parts := []map[string]any{}
-				for _, part := range response.Candidates[0].Content.Parts {
-					if part.Text != "" {
-						parts = append(parts, map[string]any{"text": part.Text})
-					}
-					if part.FunctionCall != nil {
-						parts = append(parts, map[string]any{
-							"functionCall": map[string]any{
-								"name": part.FunctionCall.Name,
-								"args": part.FunctionCall.Args,
-							},
-						})
-					}
-				}
-				if len(parts) > 0 {
-					ChatHistory = append(ChatHistory, map[string]any{
-						"role":  "orchestrator",
-						"parts": parts,
-					})
-				}
-			}
-
-			p.Metadata.LastActive = time.Now()
-			return map[string]any{"error": nil, "output": output}
 		}
 
 		// Handle 429 Too Many Requests
