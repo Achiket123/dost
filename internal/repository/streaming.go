@@ -157,7 +157,7 @@ func StreamText(text string) {
 		}
 		fmt.Print(word)
 		os.Stdout.Sync()
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 	}
 	fmt.Println()
 	os.Stdout.Sync()

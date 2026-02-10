@@ -242,6 +242,22 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 		return map[string]any{"error": "Unable to get initial context"}
 	}
 
+	// --- Context Engine: generate codebase context ---
+	var codeContext string
+	cwd, _ := os.Getwd()
+	contextFilePath, err := repository.RunContextEngine(cwd)
+	if err != nil {
+		fmt.Printf("⚠️  Context engine error: %v\n", err)
+	} else if contextFilePath != "" {
+		contextBytes, err := os.ReadFile(contextFilePath)
+		if err != nil {
+			fmt.Printf("⚠️  Failed to read context file: %v\n", err)
+		} else {
+			codeContext = string(contextBytes)
+			fmt.Printf("📎 Loaded codebase context (%d bytes)\n", len(codeContext))
+		}
+	}
+
 	// Build consolidated user message
 	var userMessage strings.Builder
 
@@ -264,12 +280,23 @@ func (p *AgentOrchestrator) Interaction(args map[string]any) map[string]any {
 	}
 	log.Println("TEST: ORCHESTRATOR:  ", userMessage.String()[0:20])
 
+	// Build parts for the first user message
+	parts := []map[string]any{}
+
+	// Include codebase context as inline text (compatible with all models)
+	if codeContext != "" {
+		parts = append(parts, map[string]any{
+			"text": "=== CODEBASE CONTEXT ===\n" + codeContext + "\n=== END CODEBASE CONTEXT ===\n",
+		})
+	}
+
+	// Add the main text part
+	parts = append(parts, map[string]any{"text": userMessage.String()})
+
 	// Push consolidated user message into ChatHistory
 	ChatHistory = append(ChatHistory, map[string]any{
-		"role": "user",
-		"parts": []map[string]any{
-			{"text": userMessage.String()},
-		},
+		"role":  "user",
+		"parts": parts,
 	})
 
 	for {
@@ -426,27 +453,27 @@ func AskAnAgent(args map[string]any) map[string]any {
 	var result map[string]any
 
 	switch agentID {
-	case "analysis":
+	// case "analysis":
 
-		anaAgent := analysis.AgentAnalysis{}
-		anaAgent.NewAgent()
-		query := map[string]any{
-			"query": fmt.Sprintf("Here is the Task run an analysis for this task: \" %s\", ", task),
-		}
-		fmt.Println(query["query"])
-		analysisOutPut := anaAgent.Interaction(query)["analysis-id"]
-		analysisOutPutStr, ok := analysisOutPut.(string)
-		if ok {
-			analysisResult := analysis.AnalysisMap[analysisOutPutStr]
-			jsonBytes, err := json.MarshalIndent(analysisResult, "", "  ")
-			if err != nil {
-				fmt.Println("X Error marshalling JSON:", err)
-				return nil
-			}
-			result = map[string]any{"analysis": string(jsonBytes)}
-		} else {
-			result = map[string]any{"analysis": analysisOutPut}
-		}
+	// 	anaAgent := analysis.AgentAnalysis{}
+	// 	anaAgent.NewAgent()
+	// 	query := map[string]any{
+	// 		"query": fmt.Sprintf("Here is the Task run an analysis for this task: \" %s\", ", task),
+	// 	}
+	// 	fmt.Println(query["query"])
+	// 	analysisOutPut := anaAgent.Interaction(query)["analysis-id"]
+	// 	analysisOutPutStr, ok := analysisOutPut.(string)
+	// 	if ok {
+	// 		analysisResult := analysis.AnalysisMap[analysisOutPutStr]
+	// 		jsonBytes, err := json.MarshalIndent(analysisResult, "", "  ")
+	// 		if err != nil {
+	// 			fmt.Println("X Error marshalling JSON:", err)
+	// 			return nil
+	// 		}
+	// 		result = map[string]any{"analysis": string(jsonBytes)}
+	// 	} else {
+	// 		result = map[string]any{"analysis": analysisOutPut}
+	// 	}
 
 	case "planner":
 		planAgent := planner.AgentPlanner{}
