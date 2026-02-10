@@ -98,6 +98,8 @@ type AIConfig struct {
 }
 
 // Load reads configuration from file and environment variables
+// Config file location is determined by the caller (see cmd/app/root.go InitConfig)
+// and supports platform-independent paths
 func Load() (*Config, error) {
 	// Set default values
 	viper.SetDefault("app.name", "dost")

@@ -50,7 +50,7 @@ func init() {
 	cobra.OnInitialize(InitConfig)
 	rootCmd.Run = handleUserQuery
 	rootCmd.PersistentFlags().BoolVar(&service.TakePermission, "yes", false, "PLEASE TELL US YOUR QUERY")
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file default is C:/.dost.yaml")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is .dost.yaml in current directory or configs/.dost.yaml)")
 	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 func handleUserQuery(cmd *cobra.Command, args []string) {
@@ -67,18 +67,36 @@ func handleUserQuery(cmd *cobra.Command, args []string) {
 
 }
 func InitConfig() {
-	switch environment {
-	case "dev":
-		cfgFile = "C:\\Users\\Achiket\\Documents\\go\\dost\\configs\\.dost.yaml"
+	// If config file is explicitly set via flag, use that
+	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
+	} else {
+		switch environment {
+		case "dev":
+			// For dev environment, look for config in multiple locations
+			// 1. Current working directory
+			// 2. configs subdirectory
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Printf("Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
 
-	case "prod":
-		home, err := os.UserHomeDir()
-		cobra.CheckErr(err)
+			// Try current working directory first
+			viper.AddConfigPath(cwd)
+			// Then try configs subdirectory
+			viper.AddConfigPath(cwd + "/configs")
+			viper.SetConfigName(".dost")
+			viper.SetConfigType("yaml")
 
-		viper.AddConfigPath(home)
-		viper.SetConfigName(".dost")
-		viper.SetConfigType("yaml")
+		case "prod":
+			home, err := os.UserHomeDir()
+			cobra.CheckErr(err)
+
+			viper.AddConfigPath(home)
+			viper.SetConfigName(".dost")
+			viper.SetConfigType("yaml")
+		}
 	}
 
 	viper.AutomaticEnv()
